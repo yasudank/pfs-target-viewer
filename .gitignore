@@ -1,0 +1,25 @@
+# Databases and heavy data directories
+*.sqlite3
+pfs_metadata.sqlite3
+gen3.sqlite3
+extracted_targets/
+
+# Python Virtual Environments
+.venv/
+.venv*/
+pfs_target_viewer/.venv*/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# OS and Editor specific files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~

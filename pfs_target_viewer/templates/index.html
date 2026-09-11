@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PFS Target & Spectrum Viewer</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <!-- Offline-ready Plotly with CDN fallback -->
+  <script src="/static/js/plotly.min.js"></script>
+  <script>
+    if (typeof Plotly === 'undefined') {
+      document.write('<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"><\/script>');
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header class="app-header">
+    <div class="header-content">
+      <div class="brand">
+        <div class="brand-logo">🌌</div>
+        <div class="brand-text">
+          <h1>PFS Target & Spectrum Viewer</h1>
+          <span class="sub-title">Subaru Prime Focus Spectrograph &bull; Coadd Data Explorer</span>
+        </div>
+      </div>
+      <div class="header-stats" id="headerStats">
+        <div class="stat-pill"><span class="stat-label">Total:</span> <span class="stat-val" id="statTotal">-</span></div>
+        <div class="stat-pill stat-galaxy"><span class="stat-label">Galaxy:</span> <span class="stat-val" id="statGalaxy">-</span></div>
+        <div class="stat-pill stat-qso"><span class="stat-label">QSO:</span> <span class="stat-val" id="statQso">-</span></div>
+        <div class="stat-pill stat-star"><span class="stat-label">Star:</span> <span class="stat-val" id="statStar">-</span></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="app-container">
+
+    <!-- Filter & Search Toolbar -->
+    <section class="toolbar-section">
+      <div class="search-row">
+        <!-- Search Input -->
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="searchInput" placeholder="Search by Target ID or obCode (e.g. rubin_0001, 170019...)" autocomplete="off">
+          <button id="clearSearchBtn" class="clear-btn" title="Clear search">&times;</button>
+        </div>
+
+        <!-- Classification Pills -->
+        <div class="filter-group">
+          <label class="group-label">Class:</label>
+          <div class="class-pills" id="classPills">
+            <button class="pill-btn active" data-class="ALL">All</button>
+            <button class="pill-btn pill-galaxy" data-class="GALAXY">Galaxy</button>
+            <button class="pill-btn pill-qso" data-class="QSO">QSO</button>
+            <button class="pill-btn pill-star" data-class="STAR">Star</button>
+          </div>
+        </div>
+
+        <!-- Redshift Range -->
+        <div class="filter-group z-range-group">
+          <label class="group-label">Redshift ($z$):</label>
+          <div class="z-inputs">
+            <input type="number" id="minZInput" placeholder="Min z" step="0.1" min="0" max="15">
+            <span class="range-sep">&ndash;</span>
+            <input type="number" id="maxZInput" placeholder="Max z" step="0.1" min="0" max="15">
+          </div>
+        </div>
+
+        <!-- Sort Control -->
+        <div class="filter-group">
+          <label class="group-label">Sort:</label>
+          <select id="sortBySelect" class="custom-select">
+            <option value="redshift" data-order="desc">Redshift (High &rarr; Low)</option>
+            <option value="redshift" data-order="asc">Redshift (Low &rarr; High)</option>
+            <option value="objId" data-order="asc">Target ID (Asc)</option>
+            <option value="obCode" data-order="asc">obCode (A &rarr; Z)</option>
+            <option value="probaGalaxy" data-order="desc">P(Galaxy) (High &rarr; Low)</option>
+            <option value="probaQSO" data-order="desc">P(QSO) (High &rarr; Low)</option>
+            <option value="probaStar" data-order="desc">P(Star) (High &rarr; Low)</option>
+          </select>
+        </div>
+
+        <!-- Reset Button -->
+        <button id="resetFiltersBtn" class="btn btn-secondary" title="Reset all filters">
+          <span>↺ Reset</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Results Status Bar -->
+    <div class="results-bar">
+      <div class="results-info">
+        <span id="resultsCount">Loading targets...</span>
+      </div>
+      <div class="page-size-selector">
+        <label for="pageSizeSelect">Show:</label>
+        <select id="pageSizeSelect" class="custom-select select-sm">
+          <option value="10">10</option>
+          <option value="25" selected>25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Target Cards / Table Section -->
+    <section class="table-container">
+      <div id="loadingOverlay" class="loading-overlay">
+        <div class="spinner"></div>
+        <p>Fetching target data...</p>
+      </div>
+
+      <table class="targets-table" id="targetsTable">
+        <thead>
+          <tr>
+            <th class="col-thumb">Spectrum</th>
+            <th class="col-target">Target ID &amp; obCode</th>
+            <th class="col-coords">Coordinates</th>
+            <th class="col-class">Classification</th>
+            <th class="col-z">Best Redshift / Velocity</th>
+            <th class="col-subclass">SubClass</th>
+            <th class="col-actions">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="targetsTbody">
+          <!-- Populated by JavaScript -->
+        </tbody>
+      </table>
+
+      <!-- Empty State -->
+      <div id="emptyState" class="empty-state" style="display: none;">
+        <div class="empty-icon">🔭</div>
+        <h3>No matching targets found</h3>
+        <p>Try adjusting your search criteria or clearing filters.</p>
+      </div>
+    </section>
+
+    <!-- Pagination Controls -->
+    <nav class="pagination-nav" id="paginationNav">
+      <button class="btn btn-nav" id="prevPageBtn" disabled>&laquo; Previous</button>
+      <div class="page-indicator">
+        Page <span id="currentPageNum">1</span> of <span id="totalPagesNum">1</span>
+      </div>
+      <button class="btn btn-nav" id="nextPageBtn" disabled>Next &raquo;</button>
+      <div class="page-jumper">
+        <input type="number" id="pageJumpInput" min="1" placeholder="Go to">
+        <button class="btn btn-sm btn-secondary" id="pageJumpBtn">Go</button>
+      </div>
+    </nav>
+
+  </main>
+
+  <!-- ==================================================================== -->
+  <!-- MODAL 1: High-Resolution PNG Preview Modal                           -->
+  <!-- ==================================================================== -->
+  <div class="modal-backdrop" id="imageModal" style="display: none;">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-header">
+        <h3 id="imageModalTitle">Coadded Spectrum Plot</h3>
+        <button class="modal-close" id="imageModalClose">&times;</button>
+      </div>
+      <div class="modal-body text-center">
+        <div class="image-wrapper">
+          <img id="imageModalImg" src="" alt="Full Spectrum Preview">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a id="imageModalDownload" href="" download class="btn btn-secondary">💾 Download PNG</a>
+        <button class="btn btn-primary" id="openInteractiveFromImageBtn">📈 Open Interactive Spectrum</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================================================================== -->
+  <!-- MODAL 2: Comprehensive Target Details Modal                          -->
+  <!-- ==================================================================== -->
+  <div class="modal-backdrop" id="detailsModal" style="display: none;">
+    <div class="modal-dialog modal-xl">
+      <div class="modal-header">
+        <div class="modal-title-box">
+          <h3 id="detailsModalTitle">Target Details</h3>
+          <span class="modal-sub-id" id="detailsModalSub"></span>
+        </div>
+        <button class="modal-close" id="detailsModalClose">&times;</button>
+      </div>
+
+      <div class="modal-tabs">
+        <button class="tab-btn active" data-tab="tabCandidates">Redshift Candidates</button>
+        <button class="tab-btn" data-tab="tabLines">Line Measurements</button>
+        <button class="tab-btn" data-tab="tabSolvers">Solver Results</button>
+        <button class="tab-btn" data-tab="tabMeta">Target Metadata</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Tab 1: Candidates -->
+        <div class="tab-pane active" id="tabCandidates">
+          <div class="table-responsive">
+            <table class="detail-subtable">
+              <thead>
+                <tr>
+                  <th>Model / Object</th>
+                  <th>Rank</th>
+                  <th>Redshift ($z$)</th>
+                  <th>$z$ Error</th>
+                  <th>Probability</th>
+                  <th>Velocity [km/s]</th>
+                  <th>SubClass</th>
+                  <th>Reduced $\chi^2$</th>
+                  <th>$p$-value</th>
+                  <th>Template</th>
+                </tr>
+              </thead>
+              <tbody id="candidatesTbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Tab 2: Line Measurements -->
+        <div class="tab-pane" id="tabLines">
+          <div class="table-responsive">
+            <table class="detail-subtable">
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th>Line Name</th>
+                  <th>Obs. Wave [nm]</th>
+                  <th>Line $z$</th>
+                  <th>$z$ Error</th>
+                  <th>Flux [nJy]</th>
+                  <th>Flux Error</th>
+                  <th>EW [&Aring;]</th>
+                  <th>$\sigma$ [nm]</th>
+                </tr>
+              </thead>
+              <tbody id="linesTbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Tab 3: Solvers -->
+        <div class="tab-pane" id="tabSolvers">
+          <div class="table-responsive">
+            <table class="detail-subtable">
+              <thead>
+                <tr>
+                  <th>Object Type</th>
+                  <th># Candidates</th>
+                  <th>ZWarning</th>
+                  <th>ZError Code</th>
+                  <th>LWarning</th>
+                  <th>LError Code</th>
+                </tr>
+              </thead>
+              <tbody id="solversTbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Tab 4: Metadata -->
+        <div class="tab-pane" id="tabMeta">
+          <div class="meta-grid" id="metaGrid"></div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="detailsModalCloseBtn">Close</button>
+        <button class="btn btn-primary" id="openInteractiveFromDetailsBtn">📈 Open Interactive Spectrum</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================================================================== -->
+  <!-- MODAL 3: Interactive FITS Spectrum Viewer (Plotly)                   -->
+  <!-- ==================================================================== -->
+  <div class="modal-backdrop" id="spectrumModal" style="display: none;">
+    <div class="modal-dialog modal-full">
+      <div class="modal-header">
+        <div class="modal-title-box">
+          <h3 id="spectrumModalTitle">Interactive Spectrum Viewer</h3>
+          <span class="modal-sub-id" id="spectrumModalSub">Raw FITS Data &bull; Coadded Spectrum</span>
+        </div>
+        <button class="modal-close" id="spectrumModalClose">&times;</button>
+      </div>
+
+      <!-- Controls & Toolbars inside Viewer -->
+      <div class="spectrum-controls-bar">
+        <!-- Binning Selector -->
+        <div class="control-item">
+          <label>Binning:</label>
+          <select id="specBinningSelect" class="custom-select select-sm">
+            <option value="0">Unbinned (Native)</option>
+            <option value="0.2">0.2 nm</option>
+            <option value="0.5" selected>0.5 nm</option>
+            <option value="1.0">1.0 nm</option>
+            <option value="2.0">2.0 nm</option>
+          </select>
+        </div>
+
+        <!-- Display Toggles -->
+        <div class="control-item toggles-item">
+          <label class="checkbox-label">
+            <input type="checkbox" id="toggleNoise" checked> 1&sigma; Noise
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="toggleBadPixels"> Bad Pixels
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="toggleEmissionLines" checked> Emission Lines
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="toggleAbsorptionLines" checked> Absorption Lines
+          </label>
+        </div>
+
+        <!-- Interactive Redshift Adjuster -->
+        <div class="control-item z-adjuster-item">
+          <label for="interactiveZInput">Adjust $z$:</label>
+          <input type="number" id="interactiveZInput" step="0.001" class="z-num-input">
+          <input type="range" id="interactiveZSlider" min="0" max="8" step="0.005" class="z-slider">
+          <button class="btn btn-sm btn-secondary" id="resetZBtn" title="Reset to best-fit redshift">Reset $z$</button>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="control-item-right">
+          <a id="downloadFitsBtn" href="" class="btn btn-sm btn-secondary">💾 Download FITS</a>
+        </div>
+      </div>
+
+      <!-- Plotly Container -->
+      <div class="modal-body plot-body">
+        <div id="plotlyLoading" class="plot-loading">
+          <div class="spinner"></div>
+          <p>Loading FITS spectrum data...</p>
+        </div>
+        <div id="plotlyChart" class="plotly-chart-area"></div>
+      </div>
+
+      <!-- Observations collapsible footer -->
+      <div class="observations-accordion">
+        <details>
+          <summary>Exposure &amp; Observation Details (<span id="obsCount">0</span> visits)</summary>
+          <div class="obs-table-container">
+            <table class="detail-subtable table-compact" id="obsTable">
+              <thead>
+                <tr>
+                  <th>Visit</th>
+                  <th>Arm</th>
+                  <th>Spectrograph</th>
+                  <th>Fiber ID</th>
+                  <th>Exp Time [s]</th>
+                  <th>Obs Time</th>
+                </tr>
+              </thead>
+              <tbody id="obsTbody"></tbody>
+            </table>
+          </div>
+        </details>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Client-side script -->
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

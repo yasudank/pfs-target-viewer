@@ -82,6 +82,21 @@ python run_pfs.py export_pfs_targets.py
 
 ---
 
+### 📥 共同研究者向け: 事前生成済みデータセットの取得 (`download_data.sh`)
+
+PFS パイプライン環境を持たない共同研究者や別のマシンでビューアを利用する場合、Step 1 および Step 2 を実行する必要はありません。Hugging Face に配置された事前生成済みデータセット（`pfs_metadata.sqlite3` および `extracted_targets.tar.gz`）を一括ダウンロード・展開できます。
+
+```bash
+# Hugging Face Access Token (Read) を設定して実行
+export HF_TOKEN="hf_xxxxxxxxxxxx"
+./download_data.sh
+
+# または Python で実行する場合:
+python download_data.py
+```
+
+---
+
 ### Step 3: Web ビューアの起動 (`pfs_target_viewer/`)
 
 **PFS パイプライン（`pfs_pipe2d`, `lsst-scipipe`）に一切依存せず**、軽量な Python 標準環境（FastAPI, Astropy, NumPy）のみで動作します。任意のマシン（個人のラップトップ、解析ワークステーション等）へフォルダごとコピーして即座に同じ環境を再現可能です。

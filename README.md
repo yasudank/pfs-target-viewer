@@ -1,145 +1,156 @@
-# PFS Target & Spectrum Viewer
-
-Subaru Prime Focus Spectrograph (PFS) のコアッド観測メタデータ集約データベースの構築、天体スペクトル生データ（FITS）およびプロット（PNG）の抽出、ならびにインタラクティブな Web スペクトルビューアを提供する統合ツールキットです。
+**English** | [日本語](README_ja.md)
 
 ---
 
-## 📁 ディレクトリ構成
+# PFS Target & Spectrum Viewer
+
+An integrated toolkit for aggregating Subaru Prime Focus Spectrograph (PFS) coadd observation metadata into an SQLite database, extracting target raw spectra (`pfsObject` FITS) and diagnostic plots (PNG), and interactively exploring targets via a standalone web application.
+
+---
+
+## 📁 Repository Structure
 
 ```text
 pfs-target-viewer/
 ├── .gitignore
-├── README.md                      # 本ドキュメント (プロジェクト全体ガイド)
-├── build_pfs_database.py          # [Step 1] pfsConfig & pfsCoZCandidates から SQLite DB を構築
-├── export_pfs_targets.py          # [Step 2] ターゲットごとの pfsObject FITS および PNG プロットを抽出
-├── run_pfs.py                     # PFS パイプラインカーネル実行ラッパー
-└── pfs_target_viewer/             # [Step 3] スタンドアロン Web アプリケーション
-    ├── README.md                  # ビューア詳細マニュアル
-    ├── app.py                     # FastAPI バックエンドサーバー & FITS/SQLite パーサー
-    ├── requirements.txt           # ビューア用依存パッケージ一覧 (PFS パイプライン非依存)
-    ├── run_viewer.sh              # ビューア起動スクリプト (venv 自動作成)
+├── README.md                      # Project Guide (English)
+├── README_ja.md                   # Project Guide (Japanese)
+├── download_data.sh               # Hugging Face dataset download script (Bash)
+├── download_data.py               # Hugging Face dataset download script (Python)
+├── build_pfs_database.py          # [Step 1] Build SQLite DB from pfsConfig & pfsCoZCandidates
+├── export_pfs_targets.py          # [Step 2] Extract per-target pfsObject FITS and PNG plots
+├── run_pfs.py                     # PFS pipeline execution wrapper
+└── pfs_target_viewer/             # [Step 3] Standalone Web Application
+    ├── README.md                  # Viewer Manual (English)
+    ├── README_ja.md               # Viewer Manual (Japanese)
+    ├── app.py                     # FastAPI backend server & FITS/SQLite parser
+    ├── requirements.txt           # Viewer dependencies (Pipeline-independent)
+    ├── run_viewer.sh              # One-click launcher (auto-creates venv)
     ├── templates/
-    │   └── index.html             # ダッシュボード UI テンプレート
+    │   └── index.html             # Dashboard UI template
     └── static/
         ├── css/
-        │   └── style.css          # 天文解析向けダークテーマ CSS
+        │   └── style.css          # Dark-themed astronomical UI styling
         └── js/
-            ├── app.js             # UI 状態管理・動的ビン化・Plotly 制御
-            └── plotly.min.js      # オフライン完全対応 Plotly.js ライブラリ
+            ├── app.js             # Client-side state, dynamic binning & Plotly logic
+            └── plotly.min.js      # Offline standalone Plotly.js bundle
 ```
 
 ---
 
-## 🚀 ワークフロー
+## 🚀 Workflow Overview
 
-本ツールキットは、以下の 3 ステップでデータを生成・可視化します。
+This toolkit provides an end-to-end data pipeline and interactive inspection workflow:
 
-```
+```text
 [PFS Butler Repository]
        │
-       ▼  (run_pfs.py build_pfs_database.py)
-[pfs_metadata.sqlite3]  ─── 13,000+ 天体のパラメータ集約
+       ▼  (python run_pfs.py build_pfs_database.py)
+[pfs_metadata.sqlite3]  ─── Aggregated metadata for 13,000+ targets
        │
-       ▼  (run_pfs.py export_pfs_targets.py)
-[extracted_targets/]    ─── fits/ (pfsObject生データ) & png/ (スペクトル図)
+       ▼  (python run_pfs.py export_pfs_targets.py)
+[extracted_targets/]    ─── fits/ (pfsObject raw data) & png/ (spectrum plots)
        │
        ▼  (cd pfs_target_viewer && ./run_viewer.sh)
-[Web Dashboard (http://localhost:8090)] ─── 検索・詳細検査・Plotly インタラクティブ解析
+[Web Dashboard (http://localhost:8090)] ─── Search, deep inspection & interactive Plotly plots
 ```
 
 ---
 
-### Step 1: メタデータデータベースの構築 (`build_pfs_database.py`)
+### Step 1: Metadata Database Ingestion (`build_pfs_database.py`)
 
-PFS Gen3 Butler リポジトリから `pfsConfig` および `pfsCoZCandidates` を読み込み、天体サマリーやソルバー結果、輝線測定値をリレーショナルデータベース SQLite (`pfs_metadata.sqlite3`) に集約します。
+Reads `pfsConfig` and `pfsCoZCandidates` from the PFS Gen3 Butler repository and ingests target summaries, solver results, candidate models, and line measurements into SQLite (`pfs_metadata.sqlite3`).
 
 ```bash
-# PFS パイプライン環境で実行
+# Execute within PFS pipeline environment
 python run_pfs.py build_pfs_database.py
 ```
 
-- **生成物**: `pfs_metadata.sqlite3`
-- **主な格納テーブル**:
-  - `v_target_summary`: 天体ごとの代表パラメータ（Redshift, 分類確率, 座標, obCode 等）
-  - `solver_results`: 各ソルバーの実行結果・警告フラグ
-  - `redshift_candidates`: 候補モデル一覧
-  - `line_measurements`: 輝線・吸収線の測定値
+- **Output**: `pfs_metadata.sqlite3`
+- **Primary Tables**:
+  - `v_target_summary`: Target representative parameters (redshift, classification probabilities, coordinates, obCode, etc.)
+  - `solver_results`: Solver status, warning flags (`zWarning`), and error codes
+  - `redshift_candidates`: Candidate model rankings, redshifts, $\chi^2$, and templates
+  - `line_measurements`: Detected emission and absorption lines (wavelength, flux, EW, $\sigma$)
 
 ---
 
-### Step 2: ターゲット生データ (FITS) & PNG の抽出 (`export_pfs_targets.py`)
+### Step 2: Target FITS & PNG Plot Extraction (`export_pfs_targets.py`)
 
-データベースに登録された全天体について、生スペクトル (`pfsObject` FITS) を生データとして保存し、赤方偏移に対応した輝線・吸収線位置をオーバーレイしたスペクトルプロット (PNG) を一括抽出します。
+Extracts raw spectra (`pfsObject` FITS) and generates quick-look spectrum plots (PNG) with rest-frame emission/absorption line overlays for all targets registered in the database.
 
 ```bash
-# PFS パイプライン環境で実行
+# Execute within PFS pipeline environment
 python run_pfs.py export_pfs_targets.py
 ```
 
-- **生成物**: `extracted_targets/`
-  - `fits/pfsObject_{obCode}_{catId}_{objId}.fits` (全天体の生スペクトル)
-  - `png/spec_{obCode}_{catId}_{objId}.png` (全天体のクイックルックプロット)
+- **Output**: `extracted_targets/`
+  - `fits/pfsObject_{obCode}_{catId}_{objId}.fits` (Raw spectrum FITS files)
+  - `png/spec_{obCode}_{catId}_{objId}.png` (Quick-look spectrum plots)
 
 ---
 
-### 📥 共同研究者向け: 事前生成済みデータセットの取得 (`download_data.sh`)
+### 📥 For Collaborators: Download Pre-built Datasets (`download_data.sh`)
 
-PFS パイプライン環境を持たない共同研究者や別のマシンでビューアを利用する場合、Step 1 および Step 2 を実行する必要はありません。Hugging Face に配置された事前生成済みデータセット（`pfs_metadata.sqlite3` および `extracted_targets.tar.gz`）を一括ダウンロード・展開できます。
+If you are a collaborator or running on a machine **without the PFS pipeline installed**, you do **not** need to run Step 1 and Step 2. You can download the pre-generated dataset (`pfs_metadata.sqlite3` and `extracted_targets.tar.gz`) directly from the Hugging Face private repository.
 
 ```bash
-# Hugging Face Access Token (Read) を設定して実行
+# Set your Hugging Face Access Token (Read permission) and run:
 export HF_TOKEN="hf_xxxxxxxxxxxx"
 ./download_data.sh
 
-# または Python で実行する場合:
+# Or using Python:
 python download_data.py
 ```
 
 ---
 
-### Step 3: Web ビューアの起動 (`pfs_target_viewer/`)
+### Step 3: Launch Web Viewer (`pfs_target_viewer/`)
 
-**PFS パイプライン（`pfs_pipe2d`, `lsst-scipipe`）に一切依存せず**、軽量な Python 標準環境（FastAPI, Astropy, NumPy）のみで動作します。任意のマシン（個人のラップトップ、解析ワークステーション等）へフォルダごとコピーして即座に同じ環境を再現可能です。
+The web application is **completely independent of the PFS pipeline (`pfs_pipe2d`, `lsst-scipipe`)**. It runs on a standard Python 3.10+ environment (FastAPI, Astropy, NumPy, Jinja2) and can be easily reproduced on any machine (laptop, workstation, or server).
 
 ```bash
 cd pfs_target_viewer
 ./run_viewer.sh
 ```
 
-ブラウザで `http://localhost:8090` にアクセスします。
+Then open `http://localhost:8090` in your web browser.
 
-#### 主な機能:
-1. **柔軟な検索・フィルタリング・ページネーション**:
-   - `obCode` や 64-bit `objId` によるキーワード検索
-   - 天体分類（`GALAXY`, `QSO`, `STAR`）によるワンクリック絞り込み
-   - 赤方偏移範囲（$z_{min} \le z \le z_{max}$）による絞り込み
-   - 13,000 件以上の天体を高速ページネーションでスムーズに閲覧
-2. **詳細パラメータの深層閲覧 (`📋 Details`)**:
-   - モデル候補一覧 (`redshift_candidates`: 各モデルの $z$, 誤差, 確率, reduced $\chi^2$, $p$-value 等)
-   - 輝線・吸収線測定値 (`line_measurements`: 検出波長, フラックス, 等価幅 EW, $\sigma$ 等)
-   - ソルバーエラー・警告フラグ (`solver_results`)
-3. **インタラクティブ FITS スペクトルビューア (`📈 Plot`)**:
-   - `pfsObject` FITS ファイルから波長・フラックス配列を直接読み込み、Plotly.js でズーム・パン描画
-   - クライアントサイドでの動的ビン幅調整（Raw, 0.2 nm, 0.5 nm, 1.0 nm, 2.0 nm）
-   - $1\sigma$ ノイズ帯およびバッドピクセルマスクのシェーディング表示
-   - 主要輝線・吸収線のオーバーレイ
-   - **リアルタイム Redshift スライダー**: スライダーを動かすと輝線位置がリアルタイムに追従
-   - 個別露出観測リスト（Visit, Arm, Spectrograph, 露出時間）の表示
-   - FITS 生ファイルおよび PNG 画像の直接ダウンロード
+#### Key Features:
+1. **Search, Filter & High-Performance Pagination**:
+   - Real-time search by `obCode` (partial match) or 64-bit `objId` (exact match)
+   - Classification filter pills (`ALL`, `GALAXY`, `QSO`, `STAR`)
+   - Redshift range filtering ($z_{min} \le z \le z_{max}$, e.g. $z \ge 6.0$ or $z \ge 7.9$)
+   - Multi-column sorting (Redshift, Target ID, Classification probabilities)
+   - Fast pagination handling 13,000+ targets smoothly (10, 25, 50, 100 per page)
+2. **Deep Parameter Inspection (`📋 Details`)**:
+   - Model candidates table (`redshift_candidates`: Rank, $z$, error, proba, reduced $\chi^2$, $p$-value, template)
+   - Line measurements table (`line_measurements`: Line name, rest wavelength, $z$, flux, EW, $\sigma$)
+   - Solver execution flags and warnings (`solver_results`)
+3. **Interactive FITS Spectrum Viewer (`📈 Plot`)**:
+   - Pure Astropy FITS reader parsing `WAVELENGTH`, `FLUX`, `COVAR`, and `MASK` directly
+   - Client-side dynamic inverse-variance binning (Raw, 0.2 nm, 0.5 nm, 1.0 nm, 2.0 nm)
+   - $1\sigma$ noise band and bad pixel mask shading
+   - Rest-frame line overlays:
+     - **Emission lines**: Lyα, C IV, C III], Mg II, [O II], Hβ, [O III], Hα, [N II], [S II]
+     - **Absorption lines**: Ca II H/K, G-band, Mg b, Na D
+   - **Real-time Redshift Slider**: Smooth 60fps line shifting for visual redshift confirmation
+   - Observations list (Visits, arms, spectrographs, exposure times)
+   - One-click raw FITS and PNG plot downloads
 
 ---
 
-## 🛠️ 環境要件
+## 🛠️ Requirements
 
-- **Step 1 & 2 (データ抽出)**:
-  - PFS 2D パイプライン環境 (`pfs_pipe2d`, `lsst-scipipe`)
-- **Step 3 (Web ビューア)**:
+- **Step 1 & 2 (Data Ingestion & Extraction)**:
+  - PFS 2D Pipeline environment (`pfs_pipe2d`, `lsst-scipipe`)
+- **Step 3 (Web Viewer)**:
   - Python 3.10+
-  - 依存ライブラリ: `fastapi`, `uvicorn`, `astropy`, `numpy`, `jinja2`
-  - ※ 付属の `run_viewer.sh` を実行すると専用仮想環境 `.venv_viewer` が自動構築されます。
+  - Dependencies: `fastapi`, `uvicorn`, `astropy`, `numpy`, `jinja2`, `python-multipart`
+  - *Note: Running `./run_viewer.sh` automatically sets up the dedicated `.venv_viewer` virtual environment.*
 
 ---
 
-## 📄 ライセンス
+## 📄 License
 
-本プロジェクトは研究・学術目的で開発されています。
+This software is developed for research and academic purposes within the Subaru Prime Focus Spectrograph collaboration.

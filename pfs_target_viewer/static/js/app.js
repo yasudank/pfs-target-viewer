@@ -553,10 +553,53 @@ window.openTargetDetails = async function (catId, objId) {
           const waveStr = l.lineWave !== null ? l.lineWave.toFixed(2) : "-";
           const zStr = l.lineZ !== null ? l.lineZ.toFixed(5) : "-";
           const zErr = l.lineZError !== null ? `&plusmn;${l.lineZError.toFixed(5)}` : "";
-          const fluxStr = l.lineFlux !== null ? l.lineFlux.toFixed(1) : "-";
-          const fluxErr = l.lineFluxError !== null ? `&plusmn;${l.lineFluxError.toFixed(1)}` : "";
+
+          // Flux formatting: in 10^-17 erg/s/cm^2 (cgs17), tooltip with SI W/m^2
+          let fluxStr = "-";
+          let fluxTooltip = "";
+          if (l.lineFlux !== null && l.lineFlux !== undefined) {
+            if (l.lineFlux === 0 || Math.abs(l.lineFlux) < 1e-32) {
+              fluxStr = "0.0";
+              fluxTooltip = "0.0 W/m²";
+            } else {
+              const cgsVal = l.lineFlux * 1e20;
+              if (Math.abs(cgsVal) >= 100) {
+                fluxStr = cgsVal.toFixed(1);
+              } else if (Math.abs(cgsVal) >= 10) {
+                fluxStr = cgsVal.toFixed(2);
+              } else {
+                fluxStr = cgsVal.toFixed(3);
+              }
+              fluxTooltip = `${l.lineFlux.toExponential(3)} W/m²`;
+            }
+          }
+
+          let fluxErr = "";
+          let fluxErrTooltip = "";
+          if (l.lineFluxError !== null && l.lineFluxError !== undefined) {
+            if (l.lineFluxError === 0 || Math.abs(l.lineFluxError) < 1e-32) {
+              fluxErr = "&plusmn;0.0";
+            } else {
+              const cgsErr = l.lineFluxError * 1e20;
+              let errStr = "";
+              if (Math.abs(cgsErr) >= 100) {
+                errStr = cgsErr.toFixed(1);
+              } else if (Math.abs(cgsErr) >= 10) {
+                errStr = cgsErr.toFixed(2);
+              } else {
+                errStr = cgsErr.toFixed(3);
+              }
+              fluxErr = `&plusmn;${errStr}`;
+              fluxErrTooltip = `&plusmn;${l.lineFluxError.toExponential(3)} W/m²`;
+            }
+          }
+
+          // Equivalent width: nm, tooltip with Angstroms (1 nm = 10 A)
           const ewStr = l.lineEW !== null ? l.lineEW.toFixed(2) : "-";
+          const ewTooltip = l.lineEW !== null ? `${(l.lineEW * 10).toFixed(2)} Å` : "";
           const sigStr = l.lineSigma !== null ? l.lineSigma.toFixed(2) : "-";
+          const contStr = l.lineContinuumLevel !== null ? l.lineContinuumLevel.toFixed(1) : "-";
+
           return `
           <tr>
             <td>${l.objectType}</td>
@@ -564,16 +607,17 @@ window.openTargetDetails = async function (catId, objId) {
             <td>${waveStr}</td>
             <td>${zStr}</td>
             <td>${zErr}</td>
-            <td>${fluxStr}</td>
-            <td>${fluxErr}</td>
-            <td>${ewStr}</td>
+            <td title="${fluxTooltip}">${fluxStr}</td>
+            <td title="${fluxErrTooltip}">${fluxErr}</td>
+            <td title="${ewTooltip}">${ewStr}</td>
             <td>${sigStr}</td>
+            <td>${contStr}</td>
           </tr>
           `;
         })
         .join("");
     } else {
-      elements.linesTbody.innerHTML = `<tr><td colspan="9" class="text-center text-muted">No line measurements recorded.</td></tr>`;
+      elements.linesTbody.innerHTML = `<tr><td colspan="10" class="text-center text-muted">No line measurements recorded.</td></tr>`;
     }
 
     // 3. Solvers Table

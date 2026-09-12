@@ -271,7 +271,9 @@ function initEventListeners() {
   // Cross modal open buttons
   elements.openInteractiveFromImageBtn.addEventListener("click", () => {
     elements.imageModal.style.display = "none";
-    if (state.activeTarget) openInteractiveSpectrum(state.activeTarget);
+    if (state.activeTarget) {
+      openInteractiveSpectrumById(state.activeTarget.catId, state.activeTarget.objId);
+    }
   });
 
   elements.openInteractiveFromDetailsBtn.addEventListener("click", () => {
@@ -496,7 +498,8 @@ function updatePaginationUI() {
 // Modal 1: Image Preview
 // ----------------------------------------------------------------------------
 window.openImagePreview = function (catId, objId, obCode) {
-  state.activeTarget = { catId, objId, obCode };
+  const existing = state.targets ? state.targets.find((t) => t.catId == catId && String(t.objId) === String(objId)) : null;
+  state.activeTarget = existing ? { ...existing } : { catId, objId, obCode };
   elements.imageModalImg.src = `/api/targets/${catId}/${objId}/image`;
   elements.imageModalTitle.textContent = `Coadded Spectrum: ${obCode || ""} (objId: ${objId}, catId: ${catId})`;
   elements.imageModalDownload.href = `/api/targets/${catId}/${objId}/image`;
@@ -678,9 +681,24 @@ window.openInteractiveSpectrumById = async function (catId, objId) {
 };
 
 window.openInteractiveSpectrum = async function (target) {
-  state.activeTarget = target;
+  if (!target) return;
   const catId = target.catId;
   const objId = target.objId;
+
+  // If target lacks bestRedshift or classificationName (e.g., opened from minimal context), fetch full details
+  if (target.bestRedshift === undefined && target.bestVelocity === undefined) {
+    try {
+      const res = await fetch(`/api/targets/${catId}/${objId}/details`);
+      if (res.ok) {
+        const data = await res.json();
+        target = { ...target, ...data.target };
+      }
+    } catch (e) {
+      console.warn("Could not fetch target details for spectrum:", e);
+    }
+  }
+
+  state.activeTarget = target;
 
   elements.spectrumModalTitle.textContent = `Interactive Spectrum: ${target.obCode || ""} (objId: ${objId})`;
   elements.spectrumModalSub.textContent = `catId: ${catId} | Class: ${target.classificationName || "UNKNOWN"}`;
@@ -688,16 +706,20 @@ window.openInteractiveSpectrum = async function (target) {
 
   // Determine initial redshift
   let initZ = 0.0;
-  if (target.classificationName === "STAR" && target.bestVelocity !== null) {
+  if (target.classificationName === "STAR" && target.bestVelocity !== null && target.bestVelocity !== undefined) {
     initZ = target.bestVelocity / C_KMS;
-  } else if (target.bestRedshift !== null && !isNaN(target.bestRedshift)) {
+  } else if (target.bestRedshift !== null && target.bestRedshift !== undefined && !isNaN(target.bestRedshift)) {
     initZ = target.bestRedshift;
   }
   state.bestZ = initZ;
   state.activeZ = initZ;
 
+  // Adjust slider max if z > 8
+  const sliderMax = Math.max(8, Math.ceil(initZ + 0.5));
+  elements.interactiveZSlider.max = sliderMax;
+
   elements.interactiveZInput.value = initZ.toFixed(4);
-  elements.interactiveZSlider.value = Math.min(Math.max(initZ, 0), 8);
+  elements.interactiveZSlider.value = Math.min(Math.max(initZ, 0), sliderMax);
 
   elements.spectrumModal.style.display = "flex";
   elements.plotlyLoading.style.display = "flex";

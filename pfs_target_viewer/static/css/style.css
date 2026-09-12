@@ -380,8 +380,8 @@ body {
   color: var(--text-secondary);
   font-size: 0.8rem;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  text-transform: none !important;
+  letter-spacing: 0.03em;
   padding: 0.85rem 1rem;
   border-bottom: 1px solid var(--border-color);
 }
@@ -737,7 +737,9 @@ body {
   padding: 0.65rem 0.85rem;
   border-bottom: 1px solid var(--border-color);
   font-size: 0.78rem;
-  text-transform: uppercase;
+  font-weight: 600;
+  text-transform: none !important;
+  letter-spacing: 0.02em;
 }
 
 .detail-subtable td {
@@ -767,7 +769,7 @@ body {
 .meta-label {
   font-size: 0.75rem;
   color: var(--text-muted);
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .meta-val {

@@ -96,6 +96,14 @@ If you are a collaborator or running on a machine **without the PFS pipeline ins
 
 > **Zero Host Pollution**: The download script automatically creates the project's dedicated virtual environment (`pfs_target_viewer/.venv_viewer`) and installs `huggingface_hub` and all other viewer dependencies inside it. Your host/system Python environment is **never modified**.
 
+> [!IMPORTANT]
+> **Data Transfer Volume & Disk Space Requirements**:
+> - **Download Size**: ~**8.0 GB** (`pfs_metadata.sqlite3` 157 MB + `extracted_targets.tar.gz` 7.8 GB)
+> - **Extracted Size**: ~**11.2 GB** (`fits/`: 7.6 GB, `png/`: 3.5 GB, database: 157 MB)
+> - **Recommended Free Disk Space**: **At least 20 GB**  
+>   *(Both the compressed archive and the extracted raw files will temporarily coexist during extraction. Once extraction is complete, you can safely delete `extracted_targets.tar.gz` to reclaim 7.8 GB of disk space.)*
+> - **Network**: A fast and stable broadband internet connection is recommended.
+
 ```bash
 # Set your Hugging Face Access Token (Read permission) and run:
 export HF_TOKEN="hf_xxxxxxxxxxxx"

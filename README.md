@@ -129,9 +129,10 @@ Then open `http://localhost:8090` in your web browser.
 #### Key Features:
 1. **Search, Filter & High-Performance Pagination**:
    - Real-time search by `obCode` (partial match) or 64-bit `objId` (exact match)
+   - Catalog ID (`catId`) dropdown filtering with per-catalog target counts
    - Classification filter pills (`ALL`, `GALAXY`, `QSO`, `STAR`)
    - Redshift range filtering ($z_{min} \le z \le z_{max}$, e.g. $z \ge 6.0$ or $z \ge 7.9$)
-   - Multi-column sorting (Redshift, Target ID, Classification probabilities)
+   - Multi-column sorting (Redshift, Target ID, `catId`, Classification probabilities)
    - Fast pagination handling 13,000+ targets smoothly (10, 25, 50, 100 per page)
 2. **Deep Parameter Inspection (`📋 Details`)**:
    - Model candidates table (`redshift_candidates`: Rank, $z$, error, proba, reduced $\chi^2$, $p$-value, template)

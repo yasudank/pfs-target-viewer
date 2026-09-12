@@ -42,6 +42,7 @@ const C_KMS = 299792.458;
 const state = {
   q: "",
   classification: "ALL",
+  cat_id: null,
   min_z: null,
   max_z: null,
   page: 1,
@@ -64,6 +65,7 @@ const elements = {
   searchInput: document.getElementById("searchInput"),
   clearSearchBtn: document.getElementById("clearSearchBtn"),
   classPills: document.getElementById("classPills"),
+  catIdSelect: document.getElementById("catIdSelect"),
   minZInput: document.getElementById("minZInput"),
   maxZInput: document.getElementById("maxZInput"),
   sortBySelect: document.getElementById("sortBySelect"),
@@ -168,6 +170,15 @@ function initEventListeners() {
     fetchTargets();
   });
 
+  // catId Select Filter
+  if (elements.catIdSelect) {
+    elements.catIdSelect.addEventListener("change", (e) => {
+      state.cat_id = e.target.value === "ALL" ? null : parseInt(e.target.value, 10);
+      state.page = 1;
+      fetchTargets();
+    });
+  }
+
   // Redshift Inputs
   let zTimer;
   const onZChange = () => {
@@ -205,10 +216,12 @@ function initEventListeners() {
     elements.maxZInput.value = "";
     elements.classPills.querySelectorAll(".pill-btn").forEach((b) => b.classList.remove("active"));
     elements.classPills.querySelector('[data-class="ALL"]').classList.add("active");
+    if (elements.catIdSelect) elements.catIdSelect.value = "ALL";
     elements.sortBySelect.value = "redshift";
 
     state.q = "";
     state.classification = "ALL";
+    state.cat_id = null;
     state.min_z = null;
     state.max_z = null;
     state.sort_by = "redshift";
@@ -323,6 +336,17 @@ async function loadStats() {
     elements.statGalaxy.textContent = (data.classification_counts.GALAXY || 0).toLocaleString();
     elements.statQso.textContent = (data.classification_counts.QSO || 0).toLocaleString();
     elements.statStar.textContent = (data.classification_counts.STAR || 0).toLocaleString();
+
+    // Populate catId select options if available
+    if (data.cat_ids && elements.catIdSelect) {
+      const currentVal = elements.catIdSelect.value || "ALL";
+      let optionsHtml = `<option value="ALL">All Catalogs (${data.total_targets.toLocaleString()})</option>`;
+      for (const [cid, cnt] of Object.entries(data.cat_ids)) {
+        optionsHtml += `<option value="${cid}">catId ${cid} (${cnt.toLocaleString()})</option>`;
+      }
+      elements.catIdSelect.innerHTML = optionsHtml;
+      elements.catIdSelect.value = currentVal;
+    }
   } catch (err) {
     console.warn("Failed to load stats:", err);
   }
@@ -343,6 +367,9 @@ async function fetchTargets() {
   if (state.q) params.append("q", state.q);
   if (state.classification && state.classification !== "ALL") {
     params.append("classification", state.classification);
+  }
+  if (state.cat_id !== null && state.cat_id !== "ALL") {
+    params.append("cat_id", state.cat_id);
   }
   if (state.min_z !== null) params.append("min_z", state.min_z);
   if (state.max_z !== null) params.append("max_z", state.max_z);

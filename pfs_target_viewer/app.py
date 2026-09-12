@@ -137,6 +137,9 @@ def get_stats():
         cur.execute("SELECT count(DISTINCT catId) FROM v_target_summary")
         cat_count = cur.fetchone()[0]
 
+        cur.execute("SELECT catId, count(*) FROM v_target_summary GROUP BY catId ORDER BY catId ASC")
+        cat_counts = {int(row[0]): row[1] for row in cur.fetchall()}
+
         cur.execute("SELECT count(DISTINCT combination) FROM v_target_summary")
         comb_count = cur.fetchone()[0]
 
@@ -144,6 +147,7 @@ def get_stats():
             "total_targets": total,
             "classification_counts": class_counts,
             "catalogs_count": cat_count,
+            "cat_ids": cat_counts,
             "combinations_count": comb_count,
             "db_path": DB_PATH,
             "data_dir": DATA_DIR,
@@ -154,7 +158,7 @@ def get_stats():
 
 @app.get("/api/targets")
 def get_targets(
-    q: Optional[str] = Query(None, description="Search query in obCode or objId"),
+    q: Optional[str] = Query(None, description="Search query in obCode, objId, or catId"),
     classification: Optional[str] = Query(None, description="Filter by classification (GALAXY, QSO, STAR)"),
     min_z: Optional[float] = Query(None, description="Minimum redshift"),
     max_z: Optional[float] = Query(None, description="Maximum redshift"),
@@ -186,8 +190,8 @@ def get_targets(
     if q:
         q_clean = q.strip()
         if q_clean.isdigit():
-            where_clauses.append("(t.objId = ? OR t.obCode LIKE ?)")
-            params.extend([int(q_clean), f"%{q_clean}%"])
+            where_clauses.append("(t.objId = ? OR t.obCode LIKE ? OR t.catId = ?)")
+            params.extend([int(q_clean), f"%{q_clean}%", int(q_clean)])
         else:
             where_clauses.append("t.obCode LIKE ?")
             params.append(f"%{q_clean}%")

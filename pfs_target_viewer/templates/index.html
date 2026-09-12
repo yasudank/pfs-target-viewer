@@ -61,6 +61,14 @@
           </div>
         </div>
 
+        <!-- Catalog ID (catId) Filter -->
+        <div class="filter-group">
+          <label class="group-label">catId:</label>
+          <select id="catIdSelect" class="custom-select">
+            <option value="ALL">All Catalogs</option>
+          </select>
+        </div>
+
         <!-- Redshift Range -->
         <div class="filter-group z-range-group">
           <label class="group-label">Redshift ($z$):</label>
@@ -78,6 +86,8 @@
             <option value="redshift" data-order="desc">Redshift (High &rarr; Low)</option>
             <option value="redshift" data-order="asc">Redshift (Low &rarr; High)</option>
             <option value="objId" data-order="asc">Target ID (Asc)</option>
+            <option value="catId" data-order="asc">catId (Asc)</option>
+            <option value="catId" data-order="desc">catId (Desc)</option>
             <option value="obCode" data-order="asc">obCode (A &rarr; Z)</option>
             <option value="probaGalaxy" data-order="desc">P(Galaxy) (High &rarr; Low)</option>
             <option value="probaQSO" data-order="desc">P(QSO) (High &rarr; Low)</option>

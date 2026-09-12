@@ -15,9 +15,10 @@ A standalone web application for searching, inspecting, and interactively visual
   - Readily portable to any machine (personal laptop, analysis workstation, cloud instance) with zero heavy pipeline setup.
 - 🔍 **Search, Filter & High-Performance Pagination**
   - Instant search by `obCode` (substring) or `objId` (64-bit ID exact match).
+  - Catalog ID (`catId`) dropdown filtering with dynamic target count badges.
   - Target classification filter pills (`GALAXY`, `QSO`, `STAR`).
   - Redshift range filtering ($z_{min} \le z \le z_{max}$, e.g. $z \ge 6.0$).
-  - Multi-column sorting by Redshift, Target ID, or classification probabilities.
+  - Multi-column sorting by Redshift, Target ID, `catId`, or classification probabilities.
   - Smooth pagination handling 13,000+ targets (10, 25, 50, or 100 targets per page).
 - 📊 **Deep Parameter Inspection (`📋 Details`)**
   - Solver status, error codes, and warning flags (`solver_results`).

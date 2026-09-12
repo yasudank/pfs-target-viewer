@@ -20,12 +20,12 @@ echo "============================================================"
 # 1. Check or create virtual environment
 if [ ! -d "${VENV_DIR}" ]; then
     echo "Creating dedicated virtual environment in ${VENV_DIR}..."
-    if command -v /home/yasuda/.local/bin/uv &> /dev/null; then
-        /home/yasuda/.local/bin/uv venv "${VENV_DIR}"
-        /home/yasuda/.local/bin/uv pip install -r "${SCRIPT_DIR}/requirements.txt" --python "${VENV_DIR}"
-    elif command -v uv &> /dev/null; then
+    if command -v uv &> /dev/null; then
         uv venv "${VENV_DIR}"
         uv pip install -r "${SCRIPT_DIR}/requirements.txt" --python "${VENV_DIR}"
+    elif [ -x "${HOME}/.local/bin/uv" ]; then
+        "${HOME}/.local/bin/uv" venv "${VENV_DIR}"
+        "${HOME}/.local/bin/uv" pip install -r "${SCRIPT_DIR}/requirements.txt" --python "${VENV_DIR}"
     else
         python3 -m venv "${VENV_DIR}"
         "${VENV_DIR}/bin/pip" install --upgrade pip

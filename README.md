@@ -94,6 +94,8 @@ python run_pfs.py export_pfs_targets.py
 
 If you are a collaborator or running on a machine **without the PFS pipeline installed**, you do **not** need to run Step 1 and Step 2. You can download the pre-generated dataset (`pfs_metadata.sqlite3` and `extracted_targets.tar.gz`) directly from the Hugging Face private repository.
 
+> **Zero Host Pollution**: The download script automatically creates the project's dedicated virtual environment (`pfs_target_viewer/.venv_viewer`) and installs `huggingface_hub` and all other viewer dependencies inside it. Your host/system Python environment is **never modified**.
+
 ```bash
 # Set your Hugging Face Access Token (Read permission) and run:
 export HF_TOKEN="hf_xxxxxxxxxxxx"

@@ -94,6 +94,8 @@ python run_pfs.py export_pfs_targets.py
 
 PFS パイプライン環境を持たない共同研究者や別のマシンでビューアを利用する場合、Step 1 および Step 2 を実行する必要はありません。Hugging Face に配置された事前生成済みデータセット（`pfs_metadata.sqlite3` および `extracted_targets.tar.gz`）を一括ダウンロード・展開できます。
 
+> **完全な仮想環境分離**: `download_data.sh` / `download_data.py` は、ホストのシステム Python 環境に**一切影響を与えません**。プロジェクト専用の仮想環境（`pfs_target_viewer/.venv_viewer`）を自動作成し、その中に `huggingface_hub` およびビューアの全依存ライブラリをインストールして実行します。データ取得が完了した時点で Web ビューアの環境構築も完了しているため、即座に `./run_viewer.sh` を起動できます。
+
 ```bash
 # Hugging Face Access Token (Read) を設定して実行
 export HF_TOKEN="hf_xxxxxxxxxxxx"

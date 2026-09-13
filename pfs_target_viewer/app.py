@@ -278,6 +278,87 @@ def get_targets(
         conn.close()
 
 
+@app.get("/api/targets/sky_positions")
+def get_sky_positions(
+    q: Optional[str] = Query(None, description="Search query in obCode, objId, or catId"),
+    classification: Optional[str] = Query(None, description="Filter by classification (GALAXY, QSO, STAR)"),
+    min_z: Optional[float] = Query(None, description="Minimum redshift"),
+    max_z: Optional[float] = Query(None, description="Maximum redshift"),
+    cat_id: Optional[int] = Query(None, description="Filter by catId"),
+    combination: Optional[str] = Query(None, description="Filter by combination"),
+    limit: int = Query(25000, description="Max coordinates to return"),
+):
+    """Retrieve lightweight celestial coordinates for all filtered targets (for full sky map display)."""
+    where_clauses = ["t.ra IS NOT NULL", "t.dec IS NOT NULL"]
+    params: List[Any] = []
+
+    if q:
+        q_clean = q.strip()
+        if q_clean.isdigit():
+            where_clauses.append("(t.objId = ? OR t.obCode LIKE ? OR t.catId = ?)")
+            params.extend([int(q_clean), f"%{q_clean}%", int(q_clean)])
+        else:
+            where_clauses.append("t.obCode LIKE ?")
+            params.append(f"%{q_clean}%")
+
+    if classification and classification.upper() != "ALL":
+        where_clauses.append("t.classificationName = ?")
+        params.append(classification.upper())
+
+    if min_z is not None:
+        where_clauses.append("t.bestRedshift >= ?")
+        params.append(min_z)
+
+    if max_z is not None:
+        where_clauses.append("t.bestRedshift <= ?")
+        params.append(max_z)
+
+    if cat_id is not None:
+        where_clauses.append("t.catId = ?")
+        params.append(cat_id)
+
+    if combination:
+        where_clauses.append("t.combination = ?")
+        params.append(combination)
+
+    where_sql = "WHERE " + " AND ".join(where_clauses)
+
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        sql = f"""
+            SELECT 
+                t.catId, t.objId, t.obCode, t.ra, t.dec,
+                t.classificationName, t.bestRedshift, t.bestVelocity
+            FROM v_target_summary t
+            {where_sql}
+            ORDER BY t.objId ASC
+            LIMIT ?
+        """
+        cur.execute(sql, params + [limit])
+        rows = cur.fetchall()
+
+        results = []
+        for r in rows:
+            results.append({
+                "catId": r["catId"],
+                "objId": str(r["objId"]),
+                "obCode": r["obCode"] or "",
+                "ra": sanitize_val(r["ra"]),
+                "dec": sanitize_val(r["dec"]),
+                "classificationName": r["classificationName"] or "UNKNOWN",
+                "bestRedshift": sanitize_val(r["bestRedshift"]),
+                "bestVelocity": sanitize_val(r["bestVelocity"]),
+            })
+
+        return {
+            "total": len(results),
+            "targets": results,
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/targets/{catId}/{objId}/details")
 def get_target_details(catId: int, objId: str):
     """Retrieve full solver, candidate, and line measurement details for a target."""

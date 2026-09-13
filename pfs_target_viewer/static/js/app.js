@@ -58,6 +58,13 @@ const state = {
   rawSpectrumData: null,
   activeZ: null,
   bestZ: null,
+
+  // Sky Map Scope & Cache
+  skyScope: "page", // "page" or "all"
+  allSkyTargets: null,
+  allSkyLoading: false,
+  lastFilterKey: null,
+  targets: [],
 };
 
 // DOM Element Selectors
@@ -135,6 +142,10 @@ const elements = {
   skyMapBody: document.getElementById("skyMapBody"),
   skyMapCount: document.getElementById("skyMapCount"),
   skyPlotly: document.getElementById("skyPlotly"),
+  skyScopePageBtn: document.getElementById("skyScopePageBtn"),
+  skyScopeAllBtn: document.getElementById("skyScopeAllBtn"),
+  skyPageCount: document.getElementById("skyPageCount"),
+  skyAllCount: document.getElementById("skyAllCount"),
   skyMapZoomInBtn: document.getElementById("skyMapZoomInBtn"),
   skyMapZoomOutBtn: document.getElementById("skyMapZoomOutBtn"),
   skyMapResetBtn: document.getElementById("skyMapResetBtn"),
@@ -359,6 +370,28 @@ function initEventListeners() {
     });
   }
 
+  if (elements.skyScopePageBtn) {
+    elements.skyScopePageBtn.addEventListener("click", () => {
+      if (state.skyScope !== "page") {
+        state.skyScope = "page";
+        renderSkyMap(state.targets);
+      }
+    });
+  }
+
+  if (elements.skyScopeAllBtn) {
+    elements.skyScopeAllBtn.addEventListener("click", () => {
+      if (state.skyScope !== "all") {
+        state.skyScope = "all";
+        if (!state.allSkyTargets && !state.allSkyLoading) {
+          fetchAllSkyPositions();
+        } else {
+          renderSkyMap(state.targets);
+        }
+      }
+    });
+  }
+
   if (elements.skyMapToggleBtn) {
     elements.skyMapToggleBtn.addEventListener("click", () => {
       const isHidden = elements.skyMapBody.style.display === "none";
@@ -407,6 +440,12 @@ async function fetchTargets() {
   state.loading = true;
   elements.loadingOverlay.classList.add("active");
 
+  const filterKey = `${state.q || ""}|${state.classification || ""}|${state.cat_id || ""}|${state.min_z || ""}|${state.max_z || ""}`;
+  if (state.lastFilterKey !== filterKey) {
+    state.lastFilterKey = filterKey;
+    state.allSkyTargets = null;
+  }
+
   const params = new URLSearchParams({
     page: state.page,
     limit: state.limit,
@@ -431,6 +470,7 @@ async function fetchTargets() {
 
     state.total = data.total;
     state.pages = data.pages;
+    state.targets = data.targets || [];
     renderTargetsTable(data.targets);
     updatePaginationUI();
   } catch (err) {
@@ -534,7 +574,11 @@ function renderTargetsTable(targets) {
     .join("");
 
   elements.targetsTbody.innerHTML = rowsHtml;
-  renderSkyMap(targets);
+  if (state.skyScope === "all" && !state.allSkyTargets && !state.allSkyLoading) {
+    fetchAllSkyPositions();
+  } else {
+    renderSkyMap(targets);
+  }
 }
 
 function updatePaginationUI() {
@@ -542,15 +586,78 @@ function updatePaginationUI() {
   elements.totalPagesNum.textContent = state.pages;
   elements.prevPageBtn.disabled = state.page <= 1;
   elements.nextPageBtn.disabled = state.page >= state.pages;
+
+  if (elements.skyPageCount) {
+    elements.skyPageCount.textContent = (state.targets ? state.targets.length : 0).toString();
+  }
+  if (elements.skyAllCount) {
+    elements.skyAllCount.textContent = (state.total || 0).toLocaleString();
+  }
 }
 
 // ----------------------------------------------------------------------------
 // Sky Map (Celestial Coordinates RA / Dec)
 // ----------------------------------------------------------------------------
-function renderSkyMap(targets) {
+async function fetchAllSkyPositions() {
+  if (state.allSkyLoading) return;
+  state.allSkyLoading = true;
+
+  if (elements.skyMapCount) {
+    elements.skyMapCount.innerHTML = `<span style="display:inline-block;width:12px;height:12px;border:2px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:4px;"></span> Loading all ${(state.total || 0).toLocaleString()} coordinates...`;
+  }
+
+  const params = new URLSearchParams({ limit: 50000 });
+  if (state.q) params.append("q", state.q);
+  if (state.classification && state.classification !== "ALL") {
+    params.append("classification", state.classification);
+  }
+  if (state.cat_id !== null && state.cat_id !== "ALL") {
+    params.append("cat_id", state.cat_id);
+  }
+  if (state.min_z !== null) params.append("min_z", state.min_z);
+  if (state.max_z !== null) params.append("max_z", state.max_z);
+
+  try {
+    const res = await fetch(`/api/targets/sky_positions?${params.toString()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    state.allSkyTargets = data.targets || [];
+    renderSkyMap(state.targets);
+  } catch (err) {
+    console.error("Failed to load all sky positions:", err);
+    if (elements.skyMapCount) elements.skyMapCount.textContent = "Error loading coordinates";
+  } finally {
+    state.allSkyLoading = false;
+  }
+}
+
+function renderSkyMap(pageTargets) {
   if (!elements.skyPlotly) return;
 
-  if (!targets || targets.length === 0) {
+  // Update scope button active state
+  if (elements.skyScopePageBtn && elements.skyScopeAllBtn) {
+    if (state.skyScope === "all") {
+      elements.skyScopePageBtn.classList.remove("active");
+      elements.skyScopeAllBtn.classList.add("active");
+    } else {
+      elements.skyScopePageBtn.classList.add("active");
+      elements.skyScopeAllBtn.classList.remove("active");
+    }
+  }
+
+  const isAll = state.skyScope === "all";
+
+  // If "all" mode is selected but data not loaded yet, fetch it
+  if (isAll && !state.allSkyTargets) {
+    if (!state.allSkyLoading) {
+      fetchAllSkyPositions();
+    }
+    return;
+  }
+
+  const targetsToPlot = isAll ? (state.allSkyTargets || []) : (pageTargets || []);
+
+  if (!targetsToPlot || targetsToPlot.length === 0) {
     elements.skyMapCount.textContent = "0 targets";
     Plotly.react(
       elements.skyPlotly,
@@ -578,12 +685,13 @@ function renderSkyMap(targets) {
     return;
   }
 
-  const validTargets = targets.filter(
+  const validTargets = targetsToPlot.filter(
     (t) => t.ra !== null && t.ra !== undefined && !isNaN(t.ra) &&
            t.dec !== null && t.dec !== undefined && !isNaN(t.dec)
   );
 
-  elements.skyMapCount.textContent = `${validTargets.length} targets plotted`;
+  const scopeLabel = isAll ? "All Filtered" : `Page ${state.page}`;
+  elements.skyMapCount.textContent = `${validTargets.length.toLocaleString()} targets plotted (${scopeLabel})`;
 
   if (validTargets.length === 0) {
     Plotly.react(
@@ -616,7 +724,7 @@ function renderSkyMap(targets) {
     GALAXY: { name: "Galaxy", color: "#38bdf8", symbol: "circle", x: [], y: [], customdata: [] },
     QSO: { name: "QSO", color: "#c084fc", symbol: "diamond", x: [], y: [], customdata: [] },
     STAR: { name: "Star", color: "#fbbf24", symbol: "star", x: [], y: [], customdata: [] },
-    UNKNOWN: { name: "Other", color: "#94a3b8", symbol: "circle-open", x: [], y: [], customdata: [] },
+    UNKNOWN: { name: "Other", color: "#94a3b8", symbol: "circle", x: [], y: [], customdata: [] },
   };
 
   validTargets.forEach((t) => {
@@ -636,22 +744,24 @@ function renderSkyMap(targets) {
   });
 
   const traces = [];
+  const plotType = isAll ? "scattergl" : "scatter";
+
   ["GALAXY", "QSO", "STAR", "UNKNOWN"].forEach((key) => {
     const g = groups[key];
     if (g.x.length > 0) {
       traces.push({
-        type: "scatter",
+        type: plotType,
         mode: "markers",
-        name: `${g.name} (${g.x.length})`,
+        name: `${g.name} (${g.x.length.toLocaleString()})`,
         x: g.x,
         y: g.y,
         customdata: g.customdata,
         marker: {
           color: g.color,
           symbol: g.symbol,
-          size: key === "STAR" ? 11 : 9,
-          opacity: 0.9,
-          line: { color: "#0f172a", width: 1.5 },
+          size: isAll ? (key === "STAR" ? 7 : 5) : (key === "STAR" ? 11 : 9),
+          opacity: isAll ? 0.75 : 0.9,
+          line: isAll ? undefined : { color: "#0f172a", width: 1.5 },
         },
         hovertemplate:
           "<b>%{customdata[2]}</b> (objId: %{customdata[1]})<br>" +
@@ -663,6 +773,36 @@ function renderSkyMap(targets) {
       });
     }
   });
+
+  // If in "All Filtered" mode, add an overlay trace for current page targets
+  if (isAll && pageTargets && pageTargets.length > 0) {
+    const pageValid = pageTargets.filter(
+      (t) => t.ra !== null && t.ra !== undefined && !isNaN(t.ra) &&
+             t.dec !== null && t.dec !== undefined && !isNaN(t.dec)
+    );
+    if (pageValid.length > 0) {
+      traces.push({
+        type: "scatter",
+        mode: "markers",
+        name: `Current Page Focus (${pageValid.length})`,
+        x: pageValid.map((t) => t.ra),
+        y: pageValid.map((t) => t.dec),
+        customdata: pageValid.map((t) => [t.catId, t.objId, t.obCode || "Target", t.classificationName || "UNKNOWN"]),
+        marker: {
+          color: "rgba(255, 255, 255, 0.15)",
+          symbol: "circle",
+          size: 13,
+          line: { color: "#ffffff", width: 2 },
+        },
+        hovertemplate:
+          "<b>Page " + state.page + " Focus</b>: %{customdata[2]} (objId: %{customdata[1]})<br>" +
+          "catId: %{customdata[0]} &bull; %{customdata[3]}<br>" +
+          "RA: %{x:.4f}&deg; | Dec: %{y:.4f}&deg;<br>" +
+          "<span style='color:#38bdf8;font-size:11px;'>👆 Click marker to preview spectrum</span>" +
+          "<extra></extra>",
+      });
+    }
+  }
 
   const layout = {
     paper_bgcolor: "#111827",
@@ -768,7 +908,10 @@ function highlightTableRow(catId, objId, scrollIntoView = true) {
 // Modal 1: Image Preview
 // ----------------------------------------------------------------------------
 window.openImagePreview = function (catId, objId, obCode) {
-  const existing = state.targets ? state.targets.find((t) => t.catId == catId && String(t.objId) === String(objId)) : null;
+  let existing = state.targets ? state.targets.find((t) => t.catId == catId && String(t.objId) === String(objId)) : null;
+  if (!existing && state.allSkyTargets) {
+    existing = state.allSkyTargets.find((t) => t.catId == catId && String(t.objId) === String(objId));
+  }
   state.activeTarget = existing ? { ...existing } : { catId, objId, obCode };
   elements.imageModalImg.src = `/api/targets/${catId}/${objId}/image`;
   elements.imageModalTitle.textContent = `Coadded Spectrum: ${obCode || ""} (objId: ${objId}, catId: ${catId})`;

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PFS Target & Spectrum Viewer</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=1.4">
+  <link rel="stylesheet" href="/static/css/style.css?v=1.5">
   <style>
     th, .targets-table th, .detail-subtable th, .meta-label {
       text-transform: none !important;
@@ -133,6 +133,16 @@
           <span class="sky-map-hint">💡 Click marker to view spectrum</span>
         </div>
         <div class="sky-map-controls">
+          <!-- Scope Switcher: Page vs All Filtered -->
+          <div class="sky-scope-group btn-group" role="group" aria-label="Sky map display scope">
+            <button type="button" class="btn btn-sm btn-primary active" id="skyScopePageBtn" title="Show targets on current table page">
+              📄 Page (<span id="skyPageCount">25</span>)
+            </button>
+            <button type="button" class="btn btn-sm btn-secondary" id="skyScopeAllBtn" title="Show all targets matching current filters">
+              🌐 All Filtered (<span id="skyAllCount">0</span>)
+            </button>
+          </div>
+
           <div class="sky-map-legend">
             <span class="legend-item"><span class="legend-dot dot-galaxy"></span>Galaxy</span>
             <span class="legend-item"><span class="legend-dot dot-qso"></span>QSO</span>
@@ -410,6 +420,6 @@
   </div>
 
   <!-- Client-side script -->
-  <script src="/static/js/app.js?v=1.4"></script>
+  <script src="/static/js/app.js?v=1.5"></script>
 </body>
 </html>

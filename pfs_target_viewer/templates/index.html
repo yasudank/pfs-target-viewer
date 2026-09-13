@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PFS Target & Spectrum Viewer</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=1.5">
+  <link rel="stylesheet" href="/static/css/style.css?v=1.6">
   <style>
     th, .targets-table th, .detail-subtable th, .meta-label {
       text-transform: none !important;
@@ -214,17 +214,35 @@
   <div class="modal-backdrop" id="imageModal" style="display: none;">
     <div class="modal-dialog modal-lg">
       <div class="modal-header">
-        <h3 id="imageModalTitle">Coadded Spectrum Plot</h3>
-        <button class="modal-close" id="imageModalClose">&times;</button>
+        <div class="modal-title-box">
+          <h3 id="imageModalTitle">Coadded Spectrum Plot</h3>
+          <span class="modal-sub-id" id="imageModalSub"></span>
+        </div>
+        <div class="image-header-actions">
+          <div class="image-nav-group">
+            <button class="btn btn-sm btn-secondary" id="imagePrevBtn" title="Previous target (Left arrow key)">◀ Prev</button>
+            <span class="image-nav-counter" id="imageNavCounter">1 / 25</span>
+            <button class="btn btn-sm btn-secondary" id="imageNextBtn" title="Next target (Right arrow key)">Next ▶</button>
+          </div>
+          <button class="modal-close" id="imageModalClose">&times;</button>
+        </div>
       </div>
-      <div class="modal-body text-center">
+      <div class="modal-body text-center image-modal-body">
+        <button class="image-float-arrow image-float-prev" id="imageFloatPrevBtn" title="Previous target (Left arrow key)">&#10094;</button>
         <div class="image-wrapper">
           <img id="imageModalImg" src="" alt="Full Spectrum Preview">
         </div>
+        <button class="image-float-arrow image-float-next" id="imageFloatNextBtn" title="Next target (Right arrow key)">&#10095;</button>
       </div>
       <div class="modal-footer">
-        <a id="imageModalDownload" href="" download class="btn btn-secondary">💾 Download PNG</a>
-        <button class="btn btn-primary" id="openInteractiveFromImageBtn">📈 Open Interactive Spectrum</button>
+        <div class="modal-footer-nav">
+          <button class="btn btn-secondary" id="imageFooterPrevBtn" title="Previous target (Left arrow key)">◀ Prev</button>
+          <button class="btn btn-secondary" id="imageFooterNextBtn" title="Next target (Right arrow key)">Next ▶</button>
+        </div>
+        <div class="modal-footer-actions">
+          <a id="imageModalDownload" href="" download class="btn btn-secondary">💾 Download PNG</a>
+          <button class="btn btn-primary" id="openInteractiveFromImageBtn">📈 Open Interactive Spectrum</button>
+        </div>
       </div>
     </div>
   </div>
@@ -420,6 +438,6 @@
   </div>
 
   <!-- Client-side script -->
-  <script src="/static/js/app.js?v=1.5"></script>
+  <script src="/static/js/app.js?v=1.6"></script>
 </body>
 </html>

@@ -22,6 +22,13 @@ Subaru Prime Focus Spectrograph (PFS) のコアッド観測メタデータ（`pf
   - Astronomical coordinate convention with reversed RA axis (`autorange: 'reversed'`).
   - Interactive zooming, panning, reset controls, and collapsible card toggle.
   - Clicking any target marker instantly launches the PNG spectrum quick-look, with seamless one-click transition to the interactive viewer with preserved estimated redshift.
+- 🖼️ **PNG Spectrum Quick-Look & Sequential Browsing**
+  - Instant high-res spectrum modal launched from table thumbnails or celestial map markers.
+  - Seamless target browsing without closing the modal via header/footer buttons and floating arrow buttons (`❮` / `❯`).
+  - Keyboard arrow key navigation (`←` / `→` keys) for effortless slide-through inspection.
+  - Automatic pagination advancing when navigating past page boundaries.
+  - Synchronized table row highlighting as you navigate between targets.
+  - One-click transition to the interactive Plotly spectrum viewer with preserved estimated redshift.
 - 📊 **詳細パラメータの深層閲覧 (Deep Inspection)**
   - ソルバーエラー・警告フラグ (`solver_results`)
   - 赤方偏移候補一覧 (`redshift_candidates`: 各モデルの $z$, 確率, reduced $\chi^2$, 残差等)

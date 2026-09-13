@@ -65,6 +65,10 @@ const state = {
   allSkyLoading: false,
   lastFilterKey: null,
   targets: [],
+
+  // Image Preview Navigation
+  imagePreviewList: null,
+  imagePreviewIndex: 0,
 };
 
 // DOM Element Selectors
@@ -102,9 +106,17 @@ const elements = {
   imageModal: document.getElementById("imageModal"),
   imageModalImg: document.getElementById("imageModalImg"),
   imageModalTitle: document.getElementById("imageModalTitle"),
+  imageModalSub: document.getElementById("imageModalSub"),
   imageModalDownload: document.getElementById("imageModalDownload"),
   imageModalClose: document.getElementById("imageModalClose"),
   openInteractiveFromImageBtn: document.getElementById("openInteractiveFromImageBtn"),
+  imagePrevBtn: document.getElementById("imagePrevBtn"),
+  imageNextBtn: document.getElementById("imageNextBtn"),
+  imageNavCounter: document.getElementById("imageNavCounter"),
+  imageFloatPrevBtn: document.getElementById("imageFloatPrevBtn"),
+  imageFloatNextBtn: document.getElementById("imageFloatNextBtn"),
+  imageFooterPrevBtn: document.getElementById("imageFooterPrevBtn"),
+  imageFooterNextBtn: document.getElementById("imageFooterNextBtn"),
 
   // Details Modal
   detailsModal: document.getElementById("detailsModal"),
@@ -288,6 +300,32 @@ function initEventListeners() {
   setupModalClose(elements.imageModal, elements.imageModalClose);
   setupModalClose(elements.detailsModal, elements.detailsModalClose, elements.detailsModalCloseBtn);
   setupModalClose(elements.spectrumModal, elements.spectrumModalClose);
+
+  // Image Modal Navigation (Prev / Next)
+  const onImagePrev = () => navigateImagePreview(-1);
+  const onImageNext = () => navigateImagePreview(1);
+
+  if (elements.imagePrevBtn) elements.imagePrevBtn.addEventListener("click", onImagePrev);
+  if (elements.imageNextBtn) elements.imageNextBtn.addEventListener("click", onImageNext);
+  if (elements.imageFloatPrevBtn) elements.imageFloatPrevBtn.addEventListener("click", onImagePrev);
+  if (elements.imageFloatNextBtn) elements.imageFloatNextBtn.addEventListener("click", onImageNext);
+  if (elements.imageFooterPrevBtn) elements.imageFooterPrevBtn.addEventListener("click", onImagePrev);
+  if (elements.imageFooterNextBtn) elements.imageFooterNextBtn.addEventListener("click", onImageNext);
+
+  // Keyboard navigation for image modal
+  document.addEventListener("keydown", (e) => {
+    if (elements.imageModal && elements.imageModal.style.display !== "none") {
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        onImagePrev();
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        onImageNext();
+      } else if (e.key === "Escape") {
+        elements.imageModal.style.display = "none";
+      }
+    }
+  });
 
   // Cross modal open buttons
   elements.openInteractiveFromImageBtn.addEventListener("click", () => {
@@ -905,19 +943,110 @@ function highlightTableRow(catId, objId, scrollIntoView = true) {
 }
 
 // ----------------------------------------------------------------------------
-// Modal 1: Image Preview
+// Modal 1: Image Preview & Target Navigation
 // ----------------------------------------------------------------------------
 window.openImagePreview = function (catId, objId, obCode) {
-  let existing = state.targets ? state.targets.find((t) => t.catId == catId && String(t.objId) === String(objId)) : null;
-  if (!existing && state.allSkyTargets) {
-    existing = state.allSkyTargets.find((t) => t.catId == catId && String(t.objId) === String(objId));
+  let list = state.targets || [];
+  let index = list.findIndex((t) => t.catId == catId && String(t.objId) === String(objId));
+
+  if (index === -1 && state.allSkyTargets && state.allSkyTargets.length > 0) {
+    const skyIdx = state.allSkyTargets.findIndex((t) => t.catId == catId && String(t.objId) === String(objId));
+    if (skyIdx !== -1) {
+      list = state.allSkyTargets;
+      index = skyIdx;
+    }
   }
-  state.activeTarget = existing ? { ...existing } : { catId, objId, obCode };
-  elements.imageModalImg.src = `/api/targets/${catId}/${objId}/image`;
-  elements.imageModalTitle.textContent = `Coadded Spectrum: ${obCode || ""} (objId: ${objId}, catId: ${catId})`;
-  elements.imageModalDownload.href = `/api/targets/${catId}/${objId}/image`;
+
+  if (index !== -1) {
+    state.imagePreviewList = list;
+    state.imagePreviewIndex = index;
+    displayImagePreview(list[index], index, list.length);
+  } else {
+    state.imagePreviewList = [{ catId, objId, obCode }];
+    state.imagePreviewIndex = 0;
+    displayImagePreview({ catId, objId, obCode }, 0, 1);
+  }
+
   elements.imageModal.style.display = "flex";
 };
+
+function displayImagePreview(target, index, total) {
+  state.activeTarget = { ...target };
+
+  elements.imageModalImg.style.opacity = "0.6";
+  elements.imageModalImg.src = `/api/targets/${target.catId}/${target.objId}/image`;
+  elements.imageModalImg.onload = () => {
+    elements.imageModalImg.style.opacity = "1";
+  };
+  elements.imageModalImg.onerror = () => {
+    elements.imageModalImg.style.opacity = "1";
+  };
+
+  elements.imageModalTitle.textContent = `Coadded Spectrum: ${target.obCode || ""} (objId: ${target.objId}, catId: ${target.catId})`;
+  elements.imageModalDownload.href = `/api/targets/${target.catId}/${target.objId}/image`;
+
+  const isPageList = state.imagePreviewList === state.targets;
+  let counterText = `${index + 1} / ${total}`;
+  let subText = `Target ${index + 1} of ${total}`;
+
+  if (isPageList && state.pages > 1) {
+    const globalIdx = (state.page - 1) * state.limit + index + 1;
+    subText = `Target ${globalIdx.toLocaleString()} of ${(state.total || 0).toLocaleString()} (Page ${state.page}, item ${index + 1}/${total})`;
+    counterText = `${index + 1} / ${total}`;
+  } else if (state.imagePreviewList === state.allSkyTargets) {
+    subText = `All Filtered • Target ${(index + 1).toLocaleString()} of ${total.toLocaleString()}`;
+    counterText = `${(index + 1).toLocaleString()} / ${total.toLocaleString()}`;
+  }
+
+  if (elements.imageModalSub) elements.imageModalSub.textContent = subText;
+  if (elements.imageNavCounter) elements.imageNavCounter.textContent = counterText;
+
+  const canPrev = isPageList ? index > 0 || state.page > 1 : index > 0;
+  const canNext = isPageList ? index < total - 1 || state.page < state.pages : index < total - 1;
+
+  updateImageNavButtons(canPrev, canNext);
+  highlightTableRow(target.catId, target.objId);
+}
+
+function updateImageNavButtons(canPrev, canNext) {
+  [elements.imagePrevBtn, elements.imageFloatPrevBtn, elements.imageFooterPrevBtn].forEach((btn) => {
+    if (btn) btn.disabled = !canPrev;
+  });
+  [elements.imageNextBtn, elements.imageFloatNextBtn, elements.imageFooterNextBtn].forEach((btn) => {
+    if (btn) btn.disabled = !canNext;
+  });
+}
+
+async function navigateImagePreview(direction) {
+  if (!state.imagePreviewList || state.imagePreviewList.length === 0) return;
+
+  const newIdx = state.imagePreviewIndex + direction;
+  const list = state.imagePreviewList;
+  const isPageList = list === state.targets;
+
+  if (newIdx >= 0 && newIdx < list.length) {
+    state.imagePreviewIndex = newIdx;
+    displayImagePreview(list[newIdx], newIdx, list.length);
+  } else if (isPageList) {
+    if (direction > 0 && state.page < state.pages) {
+      state.page++;
+      await fetchTargets();
+      state.imagePreviewList = state.targets;
+      state.imagePreviewIndex = 0;
+      if (state.targets && state.targets.length > 0) {
+        displayImagePreview(state.targets[0], 0, state.targets.length);
+      }
+    } else if (direction < 0 && state.page > 1) {
+      state.page--;
+      await fetchTargets();
+      state.imagePreviewList = state.targets;
+      state.imagePreviewIndex = state.targets.length - 1;
+      if (state.targets && state.targets.length > 0) {
+        displayImagePreview(state.targets[state.imagePreviewIndex], state.imagePreviewIndex, state.targets.length);
+      }
+    }
+  }
+}
 
 // ----------------------------------------------------------------------------
 // Modal 2: Target Details

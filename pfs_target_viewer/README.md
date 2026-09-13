@@ -20,6 +20,11 @@ A standalone web application for searching, inspecting, and interactively visual
   - Redshift range filtering ($z_{min} \le z \le z_{max}$, e.g. $z \ge 6.0$).
   - Multi-column sorting by Redshift, Target ID, `catId`, or classification probabilities.
   - Smooth pagination handling 13,000+ targets (10, 25, 50, or 100 targets per page).
+- 🌌 **Celestial Sky Distribution (RA / Dec)**
+  - Real-time Plotly scatter map of currently displayed targets on the celestial sphere.
+  - Astronomical coordinate convention with reversed RA axis (`autorange: 'reversed'`).
+  - Interactive zooming, panning, reset controls, and collapsible card toggle.
+  - Clicking any target marker instantly launches the PNG spectrum quick-look, with one-click seamless transition to the interactive viewer.
 - 📊 **Deep Parameter Inspection (`📋 Details`)**
   - Solver status, error codes, and warning flags (`solver_results`).
   - Redshift candidate model rankings (`redshift_candidates`: $z$, error, proba, reduced $\chi^2$, $p$-value, templates).

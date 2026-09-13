@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PFS Target & Spectrum Viewer</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=1.3">
+  <link rel="stylesheet" href="/static/css/style.css?v=1.4">
   <style>
     th, .targets-table th, .detail-subtable th, .meta-label {
       text-transform: none !important;
@@ -122,6 +122,34 @@
         </select>
       </div>
     </div>
+
+    <!-- Sky Map Section -->
+    <section class="sky-map-card" id="skyMapCard">
+      <div class="sky-map-header">
+        <div class="sky-map-title-group">
+          <span class="sky-map-icon">🌌</span>
+          <span class="sky-map-heading">Sky Distribution (RA / Dec)</span>
+          <span class="badge badge-info" id="skyMapCount">0 targets</span>
+          <span class="sky-map-hint">💡 Click marker to view spectrum</span>
+        </div>
+        <div class="sky-map-controls">
+          <div class="sky-map-legend">
+            <span class="legend-item"><span class="legend-dot dot-galaxy"></span>Galaxy</span>
+            <span class="legend-item"><span class="legend-dot dot-qso"></span>QSO</span>
+            <span class="legend-item"><span class="legend-dot dot-star"></span>Star</span>
+          </div>
+          <div class="btn-group">
+            <button class="btn btn-sm btn-secondary" id="skyMapZoomInBtn" title="Zoom in">🔍+</button>
+            <button class="btn btn-sm btn-secondary" id="skyMapZoomOutBtn" title="Zoom out">🔍−</button>
+            <button class="btn btn-sm btn-secondary" id="skyMapResetBtn" title="Reset view to all targets">⟲ Reset</button>
+            <button class="btn btn-sm btn-secondary" id="skyMapToggleBtn" title="Collapse / Expand Sky Map">− Collapse</button>
+          </div>
+        </div>
+      </div>
+      <div class="sky-map-body" id="skyMapBody">
+        <div id="skyPlotly" class="sky-plotly-container"></div>
+      </div>
+    </section>
 
     <!-- Target Cards / Table Section -->
     <section class="table-container">
@@ -382,6 +410,6 @@
   </div>
 
   <!-- Client-side script -->
-  <script src="/static/js/app.js?v=1.3"></script>
+  <script src="/static/js/app.js?v=1.4"></script>
 </body>
 </html>

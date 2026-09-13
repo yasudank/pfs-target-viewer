@@ -968,3 +968,115 @@ body {
   .modal-full { width: 95vw; height: 95vh; }
   .plotly-chart-area { height: 420px; }
 }
+
+/* --------------------------------------------------------------------------
+   Sky Map Section
+   -------------------------------------------------------------------------- */
+.sky-map-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  margin-bottom: 1.25rem;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.sky-map-card:hover {
+  border-color: rgba(56, 189, 248, 0.3);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+}
+
+.sky-map-header {
+  padding: 0.75rem 1.25rem;
+  background: rgba(17, 24, 39, 0.95);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.sky-map-title-group {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.sky-map-icon {
+  font-size: 1.2rem;
+}
+
+.sky-map-heading {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #f3f4f6;
+  letter-spacing: 0.02em;
+}
+
+.sky-map-hint {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  background: rgba(56, 189, 248, 0.1);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--radius-sm);
+  margin-left: 0.25rem;
+}
+
+.sky-map-controls {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.sky-map-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--bg-card);
+  padding: 0.25rem 0.65rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  font-size: 0.8rem;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #e5e7eb;
+}
+
+.legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.legend-dot.dot-galaxy { background: #38bdf8; box-shadow: 0 0 6px rgba(56, 189, 248, 0.6); }
+.legend-dot.dot-qso    { background: #c084fc; box-shadow: 0 0 6px rgba(192, 132, 252, 0.6); }
+.legend-dot.dot-star   { background: #fbbf24; box-shadow: 0 0 6px rgba(251, 191, 36, 0.6); }
+
+.sky-map-body {
+  position: relative;
+  background: #0b1120;
+  min-height: 310px;
+  transition: all 0.25s ease;
+}
+
+.sky-plotly-container {
+  width: 100%;
+  height: 310px;
+}
+
+/* Row highlight when clicked or hovered from map */
+.row-highlighted {
+  background: rgba(56, 189, 248, 0.15) !important;
+  outline: 1px solid rgba(56, 189, 248, 0.45);
+  transition: background 0.3s ease;
+}
+

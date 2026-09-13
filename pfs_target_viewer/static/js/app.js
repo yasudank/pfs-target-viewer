@@ -129,6 +129,16 @@ const elements = {
   plotlyChart: document.getElementById("plotlyChart"),
   obsCount: document.getElementById("obsCount"),
   obsTbody: document.getElementById("obsTbody"),
+
+  // Sky Map
+  skyMapCard: document.getElementById("skyMapCard"),
+  skyMapBody: document.getElementById("skyMapBody"),
+  skyMapCount: document.getElementById("skyMapCount"),
+  skyPlotly: document.getElementById("skyPlotly"),
+  skyMapZoomInBtn: document.getElementById("skyMapZoomInBtn"),
+  skyMapZoomOutBtn: document.getElementById("skyMapZoomOutBtn"),
+  skyMapResetBtn: document.getElementById("skyMapResetBtn"),
+  skyMapToggleBtn: document.getElementById("skyMapToggleBtn"),
 };
 
 // ----------------------------------------------------------------------------
@@ -324,6 +334,44 @@ function initEventListeners() {
       updateSpectralLineShapes();
     }
   });
+
+  // Sky Map Controls
+  if (elements.skyMapResetBtn) {
+    elements.skyMapResetBtn.addEventListener("click", () => {
+      if (elements.skyPlotly) {
+        Plotly.relayout(elements.skyPlotly, {
+          "xaxis.autorange": "reversed",
+          "yaxis.autorange": true,
+        });
+      }
+    });
+  }
+
+  if (elements.skyMapZoomInBtn) {
+    elements.skyMapZoomInBtn.addEventListener("click", () => {
+      zoomSkyMap(0.7);
+    });
+  }
+
+  if (elements.skyMapZoomOutBtn) {
+    elements.skyMapZoomOutBtn.addEventListener("click", () => {
+      zoomSkyMap(1.4);
+    });
+  }
+
+  if (elements.skyMapToggleBtn) {
+    elements.skyMapToggleBtn.addEventListener("click", () => {
+      const isHidden = elements.skyMapBody.style.display === "none";
+      if (isHidden) {
+        elements.skyMapBody.style.display = "block";
+        elements.skyMapToggleBtn.textContent = "− Collapse";
+        Plotly.Plots.resize(elements.skyPlotly);
+      } else {
+        elements.skyMapBody.style.display = "none";
+        elements.skyMapToggleBtn.textContent = "+ Expand";
+      }
+    });
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -399,6 +447,7 @@ function renderTargetsTable(targets) {
     elements.targetsTbody.innerHTML = "";
     elements.emptyState.style.display = "block";
     elements.resultsCount.textContent = "0 targets found";
+    renderSkyMap([]);
     return;
   }
 
@@ -444,7 +493,7 @@ function renderTargetsTable(targets) {
       const decStr = t.dec !== null ? `${t.dec.toFixed(4)}°` : "-";
 
       return `
-      <tr>
+      <tr data-catid="${t.catId}" data-objid="${t.objId}">
         <td class="col-thumb">${thumbHtml}</td>
         <td class="col-target">
           <span class="target-id">${t.objId}</span>
@@ -485,6 +534,7 @@ function renderTargetsTable(targets) {
     .join("");
 
   elements.targetsTbody.innerHTML = rowsHtml;
+  renderSkyMap(targets);
 }
 
 function updatePaginationUI() {
@@ -492,6 +542,226 @@ function updatePaginationUI() {
   elements.totalPagesNum.textContent = state.pages;
   elements.prevPageBtn.disabled = state.page <= 1;
   elements.nextPageBtn.disabled = state.page >= state.pages;
+}
+
+// ----------------------------------------------------------------------------
+// Sky Map (Celestial Coordinates RA / Dec)
+// ----------------------------------------------------------------------------
+function renderSkyMap(targets) {
+  if (!elements.skyPlotly) return;
+
+  if (!targets || targets.length === 0) {
+    elements.skyMapCount.textContent = "0 targets";
+    Plotly.react(
+      elements.skyPlotly,
+      [],
+      {
+        plot_bgcolor: "#0b1120",
+        paper_bgcolor: "#111827",
+        annotations: [
+          {
+            text: "No targets to display on sky map",
+            xref: "paper",
+            yref: "paper",
+            x: 0.5,
+            y: 0.5,
+            showarrow: false,
+            font: { color: "#9ca3af", size: 14 },
+          },
+        ],
+        xaxis: { visible: false },
+        yaxis: { visible: false },
+        margin: { l: 20, r: 20, t: 20, b: 20 },
+      },
+      { responsive: true, displayModeBar: false }
+    );
+    return;
+  }
+
+  const validTargets = targets.filter(
+    (t) => t.ra !== null && t.ra !== undefined && !isNaN(t.ra) &&
+           t.dec !== null && t.dec !== undefined && !isNaN(t.dec)
+  );
+
+  elements.skyMapCount.textContent = `${validTargets.length} targets plotted`;
+
+  if (validTargets.length === 0) {
+    Plotly.react(
+      elements.skyPlotly,
+      [],
+      {
+        plot_bgcolor: "#0b1120",
+        paper_bgcolor: "#111827",
+        annotations: [
+          {
+            text: "No celestial coordinates (RA/Dec) recorded for current targets",
+            xref: "paper",
+            yref: "paper",
+            x: 0.5,
+            y: 0.5,
+            showarrow: false,
+            font: { color: "#9ca3af", size: 14 },
+          },
+        ],
+        xaxis: { visible: false },
+        yaxis: { visible: false },
+        margin: { l: 20, r: 20, t: 20, b: 20 },
+      },
+      { responsive: true, displayModeBar: false }
+    );
+    return;
+  }
+
+  const groups = {
+    GALAXY: { name: "Galaxy", color: "#38bdf8", symbol: "circle", x: [], y: [], customdata: [] },
+    QSO: { name: "QSO", color: "#c084fc", symbol: "diamond", x: [], y: [], customdata: [] },
+    STAR: { name: "Star", color: "#fbbf24", symbol: "star", x: [], y: [], customdata: [] },
+    UNKNOWN: { name: "Other", color: "#94a3b8", symbol: "circle-open", x: [], y: [], customdata: [] },
+  };
+
+  validTargets.forEach((t) => {
+    const cls = t.classificationName || "UNKNOWN";
+    const grp = groups[cls] || groups["UNKNOWN"];
+
+    let zText = "";
+    if (cls === "STAR" && t.bestVelocity !== null) {
+      zText = `Velocity: ${t.bestVelocity.toFixed(1)} km/s`;
+    } else if (t.bestRedshift !== null) {
+      zText = `Redshift: z = ${t.bestRedshift.toFixed(4)}`;
+    }
+
+    grp.x.push(t.ra);
+    grp.y.push(t.dec);
+    grp.customdata.push([t.catId, t.objId, t.obCode || "Target", cls, zText]);
+  });
+
+  const traces = [];
+  ["GALAXY", "QSO", "STAR", "UNKNOWN"].forEach((key) => {
+    const g = groups[key];
+    if (g.x.length > 0) {
+      traces.push({
+        type: "scatter",
+        mode: "markers",
+        name: `${g.name} (${g.x.length})`,
+        x: g.x,
+        y: g.y,
+        customdata: g.customdata,
+        marker: {
+          color: g.color,
+          symbol: g.symbol,
+          size: key === "STAR" ? 11 : 9,
+          opacity: 0.9,
+          line: { color: "#0f172a", width: 1.5 },
+        },
+        hovertemplate:
+          "<b>%{customdata[2]}</b> (objId: %{customdata[1]})<br>" +
+          "catId: %{customdata[0]} &bull; %{customdata[3]}<br>" +
+          "RA: %{x:.4f}&deg; | Dec: %{y:.4f}&deg;<br>" +
+          "%{customdata[4]}<br>" +
+          "<span style='color:#38bdf8;font-size:11px;'>👆 Click marker to preview spectrum</span>" +
+          "<extra></extra>",
+      });
+    }
+  });
+
+  const layout = {
+    paper_bgcolor: "#111827",
+    plot_bgcolor: "#0b1120",
+    margin: { l: 65, r: 25, t: 20, b: 50 },
+    hovermode: "closest",
+    dragmode: "pan",
+    showlegend: true,
+    legend: {
+      orientation: "h",
+      x: 0.01,
+      y: 1.15,
+      font: { color: "#9ca3af", size: 11 },
+      bgcolor: "rgba(17, 24, 39, 0.75)",
+      bordercolor: "rgba(255, 255, 255, 0.1)",
+      borderwidth: 1,
+    },
+    xaxis: {
+      title: { text: "Right Ascension (RA) [deg]", font: { color: "#9ca3af", size: 12 } },
+      tickfont: { color: "#9ca3af", size: 11 },
+      gridcolor: "rgba(255, 255, 255, 0.07)",
+      zerolinecolor: "rgba(255, 255, 255, 0.12)",
+      autorange: "reversed", // Astronomical standard: RA increases to the left
+    },
+    yaxis: {
+      title: { text: "Declination (Dec) [deg]", font: { color: "#9ca3af", size: 12 } },
+      tickfont: { color: "#9ca3af", size: 11 },
+      gridcolor: "rgba(255, 255, 255, 0.07)",
+      zerolinecolor: "rgba(255, 255, 255, 0.12)",
+    },
+  };
+
+  const config = {
+    responsive: true,
+    displayModeBar: true,
+    modeBarButtonsToRemove: ["lasso2d", "select2d"],
+    displaylogo: false,
+    scrollZoom: true,
+  };
+
+  Plotly.react(elements.skyPlotly, traces, layout, config);
+
+  if (!elements.skyPlotly._hasClickHandler) {
+    elements.skyPlotly._hasClickHandler = true;
+    elements.skyPlotly.on("plotly_click", (data) => {
+      if (data.points && data.points.length > 0) {
+        const pt = data.points[0];
+        const custom = pt.customdata;
+        if (custom) {
+          const [catId, objId, obCode] = custom;
+          highlightTableRow(catId, objId);
+          // Show PNG quick-look modal first, as requested
+          openImagePreview(catId, objId, obCode);
+        }
+      }
+    });
+
+    elements.skyPlotly.on("plotly_hover", (data) => {
+      if (data.points && data.points.length > 0) {
+        const custom = data.points[0].customdata;
+        if (custom) {
+          highlightTableRow(custom[0], custom[1], false);
+        }
+      }
+    });
+  }
+}
+
+function zoomSkyMap(factor) {
+  const el = elements.skyPlotly;
+  if (!el || !el._fullLayout) return;
+  const xa = el._fullLayout.xaxis;
+  const ya = el._fullLayout.yaxis;
+  if (!xa || !ya || !xa.range || !ya.range) return;
+
+  const xCenter = (xa.range[0] + xa.range[1]) / 2;
+  const xSpan = (xa.range[1] - xa.range[0]) * factor;
+  const yCenter = (ya.range[0] + ya.range[1]) / 2;
+  const ySpan = (ya.range[1] - ya.range[0]) * factor;
+
+  Plotly.relayout(el, {
+    "xaxis.range": [xCenter - xSpan / 2, xCenter + xSpan / 2],
+    "yaxis.range": [yCenter - ySpan / 2, yCenter + ySpan / 2],
+    "xaxis.autorange": false,
+    "yaxis.autorange": false,
+  });
+}
+
+function highlightTableRow(catId, objId, scrollIntoView = true) {
+  document.querySelectorAll("#targetsTbody tr").forEach((row) => {
+    row.classList.remove("row-highlighted");
+  });
+  const targetRow = document.querySelector(`#targetsTbody tr[data-catid="${catId}"][data-objid="${objId}"]`);
+  if (targetRow) {
+    targetRow.classList.add("row-highlighted");
+    if (scrollIntoView) {
+      targetRow.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }
 }
 
 // ----------------------------------------------------------------------------

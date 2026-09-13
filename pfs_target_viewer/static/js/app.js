@@ -110,9 +110,6 @@ const elements = {
   imageModalDownload: document.getElementById("imageModalDownload"),
   imageModalClose: document.getElementById("imageModalClose"),
   openInteractiveFromImageBtn: document.getElementById("openInteractiveFromImageBtn"),
-  imagePrevBtn: document.getElementById("imagePrevBtn"),
-  imageNextBtn: document.getElementById("imageNextBtn"),
-  imageNavCounter: document.getElementById("imageNavCounter"),
   imageFloatPrevBtn: document.getElementById("imageFloatPrevBtn"),
   imageFloatNextBtn: document.getElementById("imageFloatNextBtn"),
   imageFooterPrevBtn: document.getElementById("imageFooterPrevBtn"),
@@ -305,8 +302,6 @@ function initEventListeners() {
   const onImagePrev = () => navigateImagePreview(-1);
   const onImageNext = () => navigateImagePreview(1);
 
-  if (elements.imagePrevBtn) elements.imagePrevBtn.addEventListener("click", onImagePrev);
-  if (elements.imageNextBtn) elements.imageNextBtn.addEventListener("click", onImageNext);
   if (elements.imageFloatPrevBtn) elements.imageFloatPrevBtn.addEventListener("click", onImagePrev);
   if (elements.imageFloatNextBtn) elements.imageFloatNextBtn.addEventListener("click", onImageNext);
   if (elements.imageFooterPrevBtn) elements.imageFooterPrevBtn.addEventListener("click", onImagePrev);
@@ -986,20 +981,16 @@ function displayImagePreview(target, index, total) {
   elements.imageModalDownload.href = `/api/targets/${target.catId}/${target.objId}/image`;
 
   const isPageList = state.imagePreviewList === state.targets;
-  let counterText = `${index + 1} / ${total}`;
   let subText = `Target ${index + 1} of ${total}`;
 
   if (isPageList && state.pages > 1) {
     const globalIdx = (state.page - 1) * state.limit + index + 1;
-    subText = `Target ${globalIdx.toLocaleString()} of ${(state.total || 0).toLocaleString()} (Page ${state.page}, item ${index + 1}/${total})`;
-    counterText = `${index + 1} / ${total}`;
+    subText = `Target ${globalIdx.toLocaleString()} of ${(state.total || 0).toLocaleString()} (Page ${state.page} • item ${index + 1} of ${total})`;
   } else if (state.imagePreviewList === state.allSkyTargets) {
     subText = `All Filtered • Target ${(index + 1).toLocaleString()} of ${total.toLocaleString()}`;
-    counterText = `${(index + 1).toLocaleString()} / ${total.toLocaleString()}`;
   }
 
   if (elements.imageModalSub) elements.imageModalSub.textContent = subText;
-  if (elements.imageNavCounter) elements.imageNavCounter.textContent = counterText;
 
   const canPrev = isPageList ? index > 0 || state.page > 1 : index > 0;
   const canNext = isPageList ? index < total - 1 || state.page < state.pages : index < total - 1;
@@ -1009,10 +1000,10 @@ function displayImagePreview(target, index, total) {
 }
 
 function updateImageNavButtons(canPrev, canNext) {
-  [elements.imagePrevBtn, elements.imageFloatPrevBtn, elements.imageFooterPrevBtn].forEach((btn) => {
+  [elements.imageFloatPrevBtn, elements.imageFooterPrevBtn].forEach((btn) => {
     if (btn) btn.disabled = !canPrev;
   });
-  [elements.imageNextBtn, elements.imageFloatNextBtn, elements.imageFooterNextBtn].forEach((btn) => {
+  [elements.imageFloatNextBtn, elements.imageFooterNextBtn].forEach((btn) => {
     if (btn) btn.disabled = !canNext;
   });
 }

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PFS Target & Spectrum Viewer</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=1.6">
+  <link rel="stylesheet" href="/static/css/style.css?v=1.7">
   <style>
     th, .targets-table th, .detail-subtable th, .meta-label {
       text-transform: none !important;
@@ -218,14 +218,7 @@
           <h3 id="imageModalTitle">Coadded Spectrum Plot</h3>
           <span class="modal-sub-id" id="imageModalSub"></span>
         </div>
-        <div class="image-header-actions">
-          <div class="image-nav-group">
-            <button class="btn btn-sm btn-secondary" id="imagePrevBtn" title="Previous target (Left arrow key)">◀ Prev</button>
-            <span class="image-nav-counter" id="imageNavCounter">1 / 25</span>
-            <button class="btn btn-sm btn-secondary" id="imageNextBtn" title="Next target (Right arrow key)">Next ▶</button>
-          </div>
-          <button class="modal-close" id="imageModalClose">&times;</button>
-        </div>
+        <button class="modal-close" id="imageModalClose">&times;</button>
       </div>
       <div class="modal-body text-center image-modal-body">
         <button class="image-float-arrow image-float-prev" id="imageFloatPrevBtn" title="Previous target (Left arrow key)">&#10094;</button>
@@ -438,6 +431,6 @@
   </div>
 
   <!-- Client-side script -->
-  <script src="/static/js/app.js?v=1.6"></script>
+  <script src="/static/js/app.js?v=1.7"></script>
 </body>
 </html>

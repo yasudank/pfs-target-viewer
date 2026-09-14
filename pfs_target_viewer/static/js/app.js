@@ -1144,7 +1144,21 @@ async function loadSkyCutout(ra, dec) {
   if (elements.hscSexagesimalVal) elements.hscSexagesimalVal.textContent = `${hms}, ${dms}`;
 
   // External Links
-  const hscMapUrl = `https://hscmap.mtk.nao.ac.jp/hscMap4/app/#/?_={"view":{"a":${ra.toFixed(6)},"d":${dec.toFixed(6)},"fovy":0.02,"roll":0},"activeReruns":["pdr3_wide","pdr3_dud"]}`;
+  // Note: hscMap (stellar-globe) requires camera coordinates (a, d, fovy) in RADIANS, not degrees!
+  const aRad = (ra * Math.PI) / 180.0;
+  const dRad = (dec * Math.PI) / 180.0;
+  // Set hscMap FOV to ~3 arcmin (0.00087 rad) for optimal surrounding celestial context
+  const fovyRad = Math.max(0.0005, (fovVal * Math.PI / 180.0) * 3);
+  const hscState = {
+    view: {
+      a: aRad,
+      d: dRad,
+      fovy: fovyRad,
+      roll: 0,
+    },
+    activeReruns: ["pdr3_wide", "pdr3_dud"],
+  };
+  const hscMapUrl = `https://hscmap.mtk.nao.ac.jp/hscMap4/app/#/?_=${encodeURIComponent(JSON.stringify(hscState))}`;
   if (elements.hscMapLinkBtn) elements.hscMapLinkBtn.href = hscMapUrl;
 
   const aladinUrl = `https://aladin.cds.unistra.fr/AladinLite/?target=${ra.toFixed(6)}%20${dec.toFixed(6)}&fov=${(fovVal * 2).toFixed(4)}&survey=P%2FPanSTARRS%2FDR1%2Fcolor-z-zg-g`;

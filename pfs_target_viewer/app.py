@@ -5,15 +5,19 @@ Provides REST API and static web dashboard for inspecting PFS target metadata,
 PNG spectra, and interactive FITS spectra from pfs_metadata.sqlite3 and extracted_targets.
 """
 import glob
+import hashlib
+import json
 import os
 import sqlite3
+import urllib.parse
+import urllib.request
 from typing import Any, Dict, List, Optional
 import numpy as np
 
 from astropy.io import fits
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -26,6 +30,8 @@ DB_PATH = os.getenv("PFS_DB_PATH", DEFAULT_DB_PATH)
 DATA_DIR = os.getenv("PFS_DATA_DIR", DEFAULT_DATA_DIR)
 FITS_DIR = os.path.join(DATA_DIR, "fits")
 PNG_DIR = os.path.join(DATA_DIR, "png")
+CUTOUT_CACHE_DIR = os.path.join(DATA_DIR, "cutout_cache")
+os.makedirs(CUTOUT_CACHE_DIR, exist_ok=True)
 
 app = FastAPI(
     title="PFS Target & Spectrum Viewer",
@@ -555,6 +561,173 @@ def download_fits(catId: int, objId: str):
 
 
 # -----------------------------------------------------------------------------
+# Sky Cutout API (Subaru HSC & Pan-STARRS Fallback)
+# -----------------------------------------------------------------------------
+SURVEY_HIPS_MAP = {
+    "hsc_wide": {
+        "id": "CDS/P/HSC/DR2/wide/color-i-r-g",
+        "name": "Subaru HSC DR2 (Wide)",
+        "badge": "Subaru HSC",
+    },
+    "hsc_deep": {
+        "id": "CDS/P/HSC/DR2/deep/color-i-r-g",
+        "name": "Subaru HSC DR2 (Deep)",
+        "badge": "Subaru HSC Deep",
+    },
+    "panstarrs": {
+        "id": "CDS/P/PanSTARRS/DR1/color-z-zg-g",
+        "name": "Pan-STARRS DR1",
+        "badge": "Pan-STARRS DR1",
+    },
+    "dss": {
+        "id": "CDS/P/DSS2/color",
+        "name": "DSS2 Color",
+        "badge": "DSS2 Color",
+    },
+}
+
+
+def fetch_hips_cutout_raw(hips_id: str, ra: float, dec: float, fov: float, width: int = 300, height: int = 300, timeout: int = 8) -> Optional[bytes]:
+    """Fetch raw JPEG cutout from CDS hips2fits service."""
+    encoded_hips = urllib.parse.quote(hips_id, safe="")
+    url = (
+        f"https://alasky.cds.unistra.fr/hips-image-services/hips2fits"
+        f"?hips={encoded_hips}&ra={ra}&dec={dec}&fov={fov}&width={width}&height={height}&format=jpg"
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "PFSTargetViewer/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                data = resp.read()
+                return data
+    except Exception:
+        return None
+    return None
+
+
+def is_blank_or_out_of_coverage(data: bytes) -> bool:
+    """Check if returned image is an empty/black frame generated when outside survey coverage."""
+    if not data or len(data) < 100:
+        return True
+    # CDS hips2fits returns ~3700 bytes of black frame when outside survey coverage
+    if len(data) < 4500:
+        return True
+    return False
+
+
+@app.get("/api/targets/cutout")
+def get_target_cutout(
+    ra: float = Query(..., description="Target Right Ascension in degrees"),
+    dec: float = Query(..., description="Target Declination in degrees"),
+    fov: float = Query(0.008333, description="Field of view in degrees (default ~30 arcsec)"),
+    width: int = Query(300, ge=100, le=800, description="Image width in pixels"),
+    height: int = Query(300, ge=100, le=800, description="Image height in pixels"),
+    survey: str = Query("auto", description="Survey: auto, hsc_wide, hsc_deep, panstarrs, dss"),
+):
+    """
+    Retrieve or cache a sky cutout image for a target coordinate.
+    If survey is 'auto', automatically tries Subaru HSC DR2 wide, and if outside
+    HSC coverage, falls back to Pan-STARRS DR1 (or DSS2).
+    """
+    survey_key = survey.lower().strip()
+    cache_prefix = f"cutout_{survey_key}_{ra:.5f}_{dec:+.5f}_{fov:.5f}_{width}x{height}"
+    cache_img = os.path.join(CUTOUT_CACHE_DIR, f"{cache_prefix}.jpg")
+    cache_meta = os.path.join(CUTOUT_CACHE_DIR, f"{cache_prefix}.json")
+
+    # 1. Check local cache
+    if os.path.exists(cache_img) and os.path.exists(cache_meta):
+        try:
+            with open(cache_meta, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            return FileResponse(
+                cache_img,
+                media_type="image/jpeg",
+                headers={
+                    "X-Survey-Used": meta.get("survey_used", survey_key),
+                    "X-Survey-Name": meta.get("survey_name", "Sky Cutout"),
+                    "X-Is-Fallback": str(meta.get("is_fallback", False)).lower(),
+                    "Cache-Control": "public, max-age=86400",
+                },
+            )
+        except Exception:
+            pass
+
+    # 2. Fetch from HiPS services
+    survey_used = ""
+    survey_name = ""
+    is_fallback = False
+    img_data = None
+
+    if survey_key == "auto":
+        # First attempt: Subaru HSC DR2 Wide
+        hsc_conf = SURVEY_HIPS_MAP["hsc_wide"]
+        img_data = fetch_hips_cutout_raw(hsc_conf["id"], ra, dec, fov, width, height)
+        if img_data and not is_blank_or_out_of_coverage(img_data):
+            survey_used = "hsc_wide"
+            survey_name = hsc_conf["name"]
+            is_fallback = False
+        else:
+            # Fallback 1: Pan-STARRS DR1
+            ps_conf = SURVEY_HIPS_MAP["panstarrs"]
+            img_data = fetch_hips_cutout_raw(ps_conf["id"], ra, dec, fov, width, height)
+            if img_data and not is_blank_or_out_of_coverage(img_data):
+                survey_used = "panstarrs"
+                survey_name = ps_conf["name"]
+                is_fallback = True
+            else:
+                # Fallback 2: DSS2
+                dss_conf = SURVEY_HIPS_MAP["dss"]
+                img_data = fetch_hips_cutout_raw(dss_conf["id"], ra, dec, fov, width, height)
+                if img_data:
+                    survey_used = "dss"
+                    survey_name = dss_conf["name"]
+                    is_fallback = True
+    elif survey_key in SURVEY_HIPS_MAP:
+        conf = SURVEY_HIPS_MAP[survey_key]
+        img_data = fetch_hips_cutout_raw(conf["id"], ra, dec, fov, width, height)
+        survey_used = survey_key
+        survey_name = conf["name"]
+        is_fallback = False
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported survey: {survey}")
+
+    if not img_data:
+        raise HTTPException(status_code=502, detail="Unable to fetch cutout image from astronomical image services.")
+
+    # 3. Save to cache
+    try:
+        with open(cache_img, "wb") as f:
+            f.write(img_data)
+        with open(cache_meta, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "survey_used": survey_used,
+                    "survey_name": survey_name,
+                    "is_fallback": is_fallback,
+                    "ra": ra,
+                    "dec": dec,
+                    "fov": fov,
+                    "width": width,
+                    "height": height,
+                },
+                f,
+            )
+    except Exception:
+        pass
+
+    return Response(
+        content=img_data,
+        media_type="image/jpeg",
+        headers={
+            "X-Survey-Used": survey_used,
+            "X-Survey-Name": survey_name,
+            "X-Is-Fallback": str(is_fallback).lower(),
+            "Cache-Control": "public, max-age=86400",
+        },
+    )
+
+
+# -----------------------------------------------------------------------------
 # Main entry point
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
@@ -574,6 +747,8 @@ if __name__ == "__main__":
         DATA_DIR = os.path.abspath(args.data_dir)
         FITS_DIR = os.path.join(DATA_DIR, "fits")
         PNG_DIR = os.path.join(DATA_DIR, "png")
+        CUTOUT_CACHE_DIR = os.path.join(DATA_DIR, "cutout_cache")
+        os.makedirs(CUTOUT_CACHE_DIR, exist_ok=True)
 
     print("=" * 65)
     print("  🌌 Starting PFS Target & Spectrum Viewer")

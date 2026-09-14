@@ -127,6 +127,39 @@ const elements = {
   solversTbody: document.getElementById("solversTbody"),
   metaGrid: document.getElementById("metaGrid"),
 
+  // HSC / Pan-STARRS Cutout in Details Modal
+  hscPreviewBanner: document.getElementById("hscPreviewBanner"),
+  hscImgContainer: document.getElementById("hscImgContainer"),
+  hscCutoutImg: document.getElementById("hscCutoutImg"),
+  hscCutoutSpinner: document.getElementById("hscCutoutSpinner"),
+  hscCutoutError: document.getElementById("hscCutoutError"),
+  hscFiberCircle: document.getElementById("hscFiberCircle"),
+  hscFovIndicator: document.getElementById("hscFovIndicator"),
+  hscSurveyTitle: document.getElementById("hscSurveyTitle"),
+  hscSurveyBadge: document.getElementById("hscSurveyBadge"),
+  hscMapLinkBtn: document.getElementById("hscMapLinkBtn"),
+  aladinLinkBtn: document.getElementById("aladinLinkBtn"),
+  fullCutoutLinkBtn: document.getElementById("fullCutoutLinkBtn"),
+  hscRaVal: document.getElementById("hscRaVal"),
+  hscDecVal: document.getElementById("hscDecVal"),
+  hscSexagesimalVal: document.getElementById("hscSexagesimalVal"),
+  hscFovSelect: document.getElementById("hscFovSelect"),
+  hscSurveySelect: document.getElementById("hscSurveySelect"),
+
+  // Expanded Sky Tab
+  expandedSkyImg: document.getElementById("expandedSkyImg"),
+  expandedSkySpinner: document.getElementById("expandedSkySpinner"),
+  expandedSkyError: document.getElementById("expandedSkyError"),
+  expandedFiberCircle: document.getElementById("expandedFiberCircle"),
+  expandedFovIndicator: document.getElementById("expandedFovIndicator"),
+  expandedSurveyName: document.getElementById("expandedSurveyName"),
+  expandedCoverageStatus: document.getElementById("expandedCoverageStatus"),
+  expandedCoords: document.getElementById("expandedCoords"),
+  expandedSexagesimal: document.getElementById("expandedSexagesimal"),
+  expandedTargetInfo: document.getElementById("expandedTargetInfo"),
+  expandedHscMapBtn: document.getElementById("expandedHscMapBtn"),
+  expandedAladinBtn: document.getElementById("expandedAladinBtn"),
+
   // Interactive Spectrum Modal
   spectrumModal: document.getElementById("spectrumModal"),
   spectrumModalTitle: document.getElementById("spectrumModalTitle"),
@@ -334,6 +367,31 @@ function initEventListeners() {
     elements.detailsModal.style.display = "none";
     if (state.activeTarget) openInteractiveSpectrum(state.activeTarget);
   });
+
+  // HSC / Pan-STARRS Cutout interactions
+  if (elements.hscFovSelect) {
+    elements.hscFovSelect.addEventListener("change", () => {
+      if (state.activeTarget && state.activeTarget.ra !== undefined && state.activeTarget.dec !== undefined) {
+        loadSkyCutout(state.activeTarget.ra, state.activeTarget.dec);
+      }
+    });
+  }
+
+  if (elements.hscSurveySelect) {
+    elements.hscSurveySelect.addEventListener("change", () => {
+      if (state.activeTarget && state.activeTarget.ra !== undefined && state.activeTarget.dec !== undefined) {
+        loadSkyCutout(state.activeTarget.ra, state.activeTarget.dec);
+      }
+    });
+  }
+
+  if (elements.hscImgContainer) {
+    elements.hscImgContainer.addEventListener("click", () => {
+      if (elements.fullCutoutLinkBtn && elements.fullCutoutLinkBtn.href) {
+        window.open(elements.fullCutoutLinkBtn.href, "_blank");
+      }
+    });
+  }
 
   // Tab switching in Details modal
   document.querySelectorAll(".modal-tabs .tab-btn").forEach((tabBtn) => {
@@ -1040,6 +1098,153 @@ async function navigateImagePreview(direction) {
 }
 
 // ----------------------------------------------------------------------------
+// Sky Cutout & Coordinate Formatting Utilities
+// ----------------------------------------------------------------------------
+function formatRaHms(ra) {
+  if (ra === null || ra === undefined || isNaN(ra)) return "-";
+  let normRa = ((ra % 360) + 360) % 360;
+  let totalHours = normRa / 15.0;
+  let h = Math.floor(totalHours);
+  let remMinutes = (totalHours - h) * 60;
+  let m = Math.floor(remMinutes);
+  let s = (remMinutes - m) * 60;
+  return `${String(h).padStart(2, "0")}h ${String(m).padStart(2, "0")}m ${s.toFixed(2).padStart(5, "0")}s`;
+}
+
+function formatDecDms(dec) {
+  if (dec === null || dec === undefined || isNaN(dec)) return "-";
+  let sign = dec < 0 ? "-" : "+";
+  let absDec = Math.abs(dec);
+  let d = Math.floor(absDec);
+  let remMinutes = (absDec - d) * 60;
+  let m = Math.floor(remMinutes);
+  let s = (remMinutes - m) * 60;
+  return `${sign}${String(d).padStart(2, "0")}° ${String(m).padStart(2, "0")}' ${s.toFixed(1).padStart(4, "0")}"`;
+}
+
+let currentCutoutRequestId = 0;
+
+async function loadSkyCutout(ra, dec) {
+  const reqId = ++currentCutoutRequestId;
+
+  if (ra === null || dec === null || ra === undefined || dec === undefined || isNaN(ra) || isNaN(dec)) {
+    if (elements.hscPreviewBanner) elements.hscPreviewBanner.style.display = "none";
+    return;
+  }
+  if (elements.hscPreviewBanner) elements.hscPreviewBanner.style.display = "flex";
+
+  const fovVal = parseFloat(elements.hscFovSelect ? elements.hscFovSelect.value : 0.008333) || 0.008333;
+  const surveyVal = elements.hscSurveySelect ? elements.hscSurveySelect.value : "auto";
+
+  // Coordinates text
+  if (elements.hscRaVal) elements.hscRaVal.textContent = `${ra.toFixed(6)}°`;
+  if (elements.hscDecVal) elements.hscDecVal.textContent = `${dec.toFixed(6)}°`;
+  const hms = formatRaHms(ra);
+  const dms = formatDecDms(dec);
+  if (elements.hscSexagesimalVal) elements.hscSexagesimalVal.textContent = `${hms}, ${dms}`;
+
+  // External Links
+  const hscMapUrl = `https://hscmap.mtk.nao.ac.jp/hscMap4/app/#/?_={"view":{"a":${ra.toFixed(6)},"d":${dec.toFixed(6)},"fovy":0.02,"roll":0},"activeReruns":["pdr3_wide","pdr3_dud"]}`;
+  if (elements.hscMapLinkBtn) elements.hscMapLinkBtn.href = hscMapUrl;
+
+  const aladinUrl = `https://aladin.cds.unistra.fr/AladinLite/?target=${ra.toFixed(6)}%20${dec.toFixed(6)}&fov=${(fovVal * 2).toFixed(4)}&survey=P%2FPanSTARRS%2FDR1%2Fcolor-z-zg-g`;
+  if (elements.aladinLinkBtn) elements.aladinLinkBtn.href = aladinUrl;
+
+  const cutoutApiUrl = `/api/targets/cutout?ra=${ra}&dec=${dec}&fov=${fovVal}&width=300&height=300&survey=${surveyVal}`;
+  if (elements.fullCutoutLinkBtn) elements.fullCutoutLinkBtn.href = cutoutApiUrl;
+
+  // FOV indicator
+  const fovArcsec = Math.round(fovVal * 3600);
+  const fovText = `${fovArcsec}″`;
+  if (elements.hscFovIndicator) elements.hscFovIndicator.textContent = fovText;
+  if (elements.expandedFovIndicator) elements.expandedFovIndicator.textContent = fovText;
+
+  // Calculate fiber aperture reticle pixel size (PFS fiber core diameter ~1.12 arcsec)
+  const thumbnailPx = 140;
+  const fiberScalePx = Math.max(4, Math.min(thumbnailPx, (1.12 / fovArcsec) * thumbnailPx));
+  if (elements.hscFiberCircle) {
+    elements.hscFiberCircle.style.width = `${fiberScalePx.toFixed(1)}px`;
+    elements.hscFiberCircle.style.height = `${fiberScalePx.toFixed(1)}px`;
+  }
+
+  if (elements.expandedFiberCircle) {
+    const expandedPx = 360;
+    const expFiberScale = Math.max(6, Math.min(expandedPx, (1.12 / fovArcsec) * expandedPx));
+    elements.expandedFiberCircle.style.width = `${expFiberScale.toFixed(1)}px`;
+    elements.expandedFiberCircle.style.height = `${expFiberScale.toFixed(1)}px`;
+  }
+
+  // Update loading state
+  if (elements.hscCutoutSpinner) elements.hscCutoutSpinner.style.display = "flex";
+  if (elements.hscCutoutError) elements.hscCutoutError.style.display = "none";
+  if (elements.hscCutoutImg) elements.hscCutoutImg.style.display = "none";
+  if (elements.expandedSkySpinner) {
+    elements.expandedSkySpinner.style.display = "flex";
+    elements.expandedSkyError.style.display = "none";
+    elements.expandedSkyImg.style.display = "none";
+  }
+
+  try {
+    const resp = await fetch(cutoutApiUrl);
+    if (reqId !== currentCutoutRequestId) return;
+
+    if (!resp.ok) throw new Error("Cutout service unavailable");
+
+    const surveyUsed = resp.headers.get("X-Survey-Used") || "hsc_wide";
+    const surveyName = resp.headers.get("X-Survey-Name") || "Subaru HSC DR2";
+    const isFallback = resp.headers.get("X-Is-Fallback") === "true";
+
+    const blob = await resp.blob();
+    if (reqId !== currentCutoutRequestId) return;
+
+    const imgUrl = URL.createObjectURL(blob);
+
+    if (elements.hscCutoutImg) {
+      elements.hscCutoutImg.src = imgUrl;
+      elements.hscCutoutImg.style.display = "block";
+    }
+    if (elements.hscCutoutSpinner) elements.hscCutoutSpinner.style.display = "none";
+
+    if (elements.expandedSkyImg) {
+      elements.expandedSkyImg.src = imgUrl;
+      elements.expandedSkyImg.style.display = "block";
+    }
+    if (elements.expandedSkySpinner) elements.expandedSkySpinner.style.display = "none";
+
+    // Update survey badge and title
+    if (elements.hscSurveyTitle && elements.hscSurveyBadge) {
+      if (isFallback) {
+        elements.hscSurveyTitle.innerHTML = `🪐 Pan-STARRS Sky Cutout <small style="font-size:0.74rem; font-weight:400; color:#fbbf24;">(Fallback)</small>`;
+        elements.hscSurveyBadge.textContent = surveyName;
+        elements.hscSurveyBadge.classList.add("fallback");
+      } else {
+        elements.hscSurveyTitle.innerHTML = `🌌 Subaru HSC Sky Cutout`;
+        elements.hscSurveyBadge.textContent = surveyName;
+        elements.hscSurveyBadge.classList.remove("fallback");
+      }
+    }
+
+    // Update expanded tab metadata
+    if (elements.expandedSurveyName) elements.expandedSurveyName.textContent = surveyName;
+    if (elements.expandedCoverageStatus) elements.expandedCoverageStatus.textContent = isFallback ? "Outside HSC Coverage (Pan-STARRS Fallback)" : "Within Subaru HSC Coverage";
+    if (elements.expandedCoords) elements.expandedCoords.textContent = `RA: ${ra.toFixed(6)}°, Dec: ${dec.toFixed(6)}°`;
+    if (elements.expandedSexagesimal) elements.expandedSexagesimal.textContent = `${hms}, ${dms}`;
+    if (elements.expandedTargetInfo && state.activeTarget) {
+      elements.expandedTargetInfo.textContent = `objId: ${state.activeTarget.objId}, obCode: ${state.activeTarget.obCode || "-"}`;
+    }
+    if (elements.expandedHscMapBtn) elements.expandedHscMapBtn.href = hscMapUrl;
+    if (elements.expandedAladinBtn) elements.expandedAladinBtn.href = aladinUrl;
+
+  } catch (err) {
+    if (reqId !== currentCutoutRequestId) return;
+    if (elements.hscCutoutSpinner) elements.hscCutoutSpinner.style.display = "none";
+    if (elements.hscCutoutError) elements.hscCutoutError.style.display = "flex";
+    if (elements.expandedSkySpinner) elements.expandedSkySpinner.style.display = "none";
+    if (elements.expandedSkyError) elements.expandedSkyError.style.display = "flex";
+  }
+}
+
+// ----------------------------------------------------------------------------
 // Modal 2: Target Details
 // ----------------------------------------------------------------------------
 window.openTargetDetails = async function (catId, objId) {
@@ -1189,6 +1394,13 @@ window.openTargetDetails = async function (catId, objId) {
       <div class="meta-item"><div class="meta-label">FITS File</div><div class="meta-val">${data.files.fits_filename || "Not found"}</div></div>
       <div class="meta-item"><div class="meta-label">PNG Image</div><div class="meta-val">${data.files.png_filename || "Not found"}</div></div>
     `;
+
+    // 5. Load Subaru HSC / Pan-STARRS Cutout Preview
+    if (t.ra !== null && t.dec !== null && t.ra !== undefined && t.dec !== undefined && !isNaN(t.ra) && !isNaN(t.dec)) {
+      loadSkyCutout(t.ra, t.dec);
+    } else {
+      if (elements.hscPreviewBanner) elements.hscPreviewBanner.style.display = "none";
+    }
 
     elements.detailsModal.style.display = "flex";
   } catch (err) {

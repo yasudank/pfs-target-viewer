@@ -1180,3 +1180,354 @@ body {
   transition: background 0.3s ease;
 }
 
+/* ========================================================================== */
+/* Subaru HSC / Pan-STARRS Sky Cutout Preview Banner in Details Modal        */
+/* ========================================================================== */
+.hsc-preview-banner {
+  display: flex;
+  gap: 1.25rem;
+  padding: 0.9rem 1.5rem;
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.85) 0%, rgba(30, 41, 59, 0.6) 100%);
+  border-bottom: 1px solid var(--border-color);
+  align-items: center;
+}
+
+.hsc-img-container {
+  position: relative;
+  width: 140px;
+  height: 140px;
+  min-width: 140px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: #070b14;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+
+.hsc-img-container img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.hsc-reticle-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.hsc-reticle-circle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 1.5px solid #00f0ff;
+  box-shadow: 0 0 6px rgba(0, 240, 255, 0.7);
+  width: 8px;
+  height: 8px;
+  transition: all 0.2s ease;
+}
+
+.hsc-reticle-crosshair-h {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 1px;
+  transform: translateY(-50%);
+  background: linear-gradient(90deg, rgba(0, 240, 255, 0.35) 0%, rgba(0, 240, 255, 0.05) 42%, transparent 42%, transparent 58%, rgba(0, 240, 255, 0.05) 58%, rgba(0, 240, 255, 0.35) 100%);
+  pointer-events: none;
+}
+
+.hsc-reticle-crosshair-v {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  transform: translateX(-50%);
+  background: linear-gradient(180deg, rgba(0, 240, 255, 0.35) 0%, rgba(0, 240, 255, 0.05) 42%, transparent 42%, transparent 58%, rgba(0, 240, 255, 0.05) 58%, rgba(0, 240, 255, 0.35) 100%);
+  pointer-events: none;
+}
+
+.hsc-fov-indicator {
+  position: absolute;
+  bottom: 4px;
+  right: 6px;
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+  background: rgba(0, 0, 0, 0.75);
+  color: #38bdf8;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  pointer-events: none;
+  font-weight: 500;
+}
+
+.hsc-cutout-spinner,
+.hsc-cutout-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 15, 29, 0.88);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  text-align: center;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  z-index: 2;
+}
+
+.hsc-mini-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgba(56, 189, 248, 0.2);
+  border-top-color: #38bdf8;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.hsc-info-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.hsc-info-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.hsc-title-group {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.hsc-title-group h4 {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 600;
+  color: #fff;
+  letter-spacing: 0.01em;
+}
+
+.hsc-survey-badge {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-weight: 600;
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  transition: all 0.2s ease;
+}
+
+.hsc-survey-badge.fallback {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+.hsc-link-group {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.btn-xs {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.76rem;
+  border-radius: var(--radius-sm);
+  line-height: 1.2;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-outline-info {
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.5);
+  background: rgba(56, 189, 248, 0.08);
+  font-weight: 500;
+}
+
+.btn-outline-info:hover {
+  background: #38bdf8;
+  color: #0f172a;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.5);
+}
+
+.hsc-coords-row {
+  display: flex;
+  gap: 1.25rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  align-items: center;
+  flex-wrap: wrap;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 0.3rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.hsc-coord-item {
+  display: flex;
+  align-items: center;
+}
+
+.hsc-label {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  font-weight: 600;
+  margin-right: 0.3rem;
+}
+
+.hsc-val {
+  color: #e2e8f0;
+  font-weight: 500;
+}
+
+.hsc-controls-row {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+}
+
+.hsc-control-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.hsc-control-item label {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.hsc-select-sm {
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid var(--border-color);
+  color: #e2e8f0;
+  font-size: 0.76rem;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  outline: none;
+  cursor: pointer;
+}
+
+.hsc-select-sm:focus {
+  border-color: #38bdf8;
+}
+
+.hsc-fiber-note {
+  margin-left: auto;
+  font-size: 0.73rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.fiber-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid #00f0ff;
+  background: rgba(0, 240, 255, 0.25);
+  display: inline-block;
+  box-shadow: 0 0 4px rgba(0, 240, 255, 0.6);
+}
+
+/* Tab 5: Expanded Sky View */
+.expanded-sky-view {
+  display: flex;
+  gap: 1.75rem;
+  align-items: flex-start;
+  padding: 0.5rem;
+}
+
+.expanded-sky-img-wrap {
+  position: relative;
+  width: 360px;
+  height: 360px;
+  min-width: 360px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: #070b14;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.expanded-sky-img-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.expanded-reticle {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.expanded-fiber-circle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 2px solid #00f0ff;
+  box-shadow: 0 0 8px rgba(0, 240, 255, 0.8);
+  width: 16px;
+  height: 16px;
+  transition: all 0.2s ease;
+}
+
+.expanded-sky-desc {
+  flex: 1;
+  min-width: 0;
+}
+
+.expanded-sky-desc h5 {
+  margin: 0 0 0.5rem 0;
+  color: #fff;
+  font-size: 1.05rem;
+}
+
+.expanded-sky-desc p {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin-bottom: 1rem;
+}
+
+.expanded-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+

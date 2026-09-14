@@ -253,11 +253,92 @@
         <button class="modal-close" id="detailsModalClose">&times;</button>
       </div>
 
+      <!-- Subaru HSC / Pan-STARRS Cutout Preview Banner -->
+      <div class="hsc-preview-banner" id="hscPreviewBanner">
+        <div class="hsc-img-container" id="hscImgContainer" title="Click to view full-resolution cutout">
+          <img id="hscCutoutImg" src="" alt="Target Sky Cutout" style="display: none;">
+          <div class="hsc-cutout-spinner" id="hscCutoutSpinner">
+            <div class="hsc-mini-spinner"></div>
+            <span>Loading sky image...</span>
+          </div>
+          <div class="hsc-cutout-error" id="hscCutoutError" style="display: none;">
+            <span>⚠️ Image unavailable</span>
+          </div>
+          <div class="hsc-reticle-overlay" id="hscReticleOverlay">
+            <div class="hsc-reticle-circle" id="hscFiberCircle" title="PFS ~1.1 arcsec fiber aperture"></div>
+            <div class="hsc-reticle-crosshair-h"></div>
+            <div class="hsc-reticle-crosshair-v"></div>
+          </div>
+          <span class="hsc-fov-indicator" id="hscFovIndicator">30″</span>
+        </div>
+
+        <div class="hsc-info-container">
+          <div class="hsc-info-header">
+            <div class="hsc-title-group">
+              <h4 id="hscSurveyTitle">🌌 Subaru HSC Sky Cutout</h4>
+              <span class="hsc-survey-badge" id="hscSurveyBadge">Subaru HSC DR2</span>
+            </div>
+            <div class="hsc-link-group">
+              <a id="hscMapLinkBtn" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-xs btn-outline-info" title="Open NAOJ hscMap in new tab">
+                🪐 Open in NAOJ hscMap ↗
+              </a>
+              <a id="aladinLinkBtn" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-xs btn-outline-secondary" title="Open Aladin Sky Atlas in new tab">
+                🔭 Aladin ↗
+              </a>
+              <a id="fullCutoutLinkBtn" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-xs btn-outline-secondary" title="View direct cutout image">
+                🔍 Full Res
+              </a>
+            </div>
+          </div>
+
+          <div class="hsc-coords-row">
+            <div class="hsc-coord-item">
+              <span class="hsc-label">RA:</span>
+              <span class="hsc-val" id="hscRaVal">-</span>
+            </div>
+            <div class="hsc-coord-item">
+              <span class="hsc-label">Dec:</span>
+              <span class="hsc-val" id="hscDecVal">-</span>
+            </div>
+            <div class="hsc-coord-item hsc-sexagesimal">
+              <span class="hsc-label">HMS/DMS:</span>
+              <span class="hsc-val font-mono" id="hscSexagesimalVal">-</span>
+            </div>
+          </div>
+
+          <div class="hsc-controls-row">
+            <div class="hsc-control-item">
+              <label for="hscFovSelect">Field of View (FOV):</label>
+              <select id="hscFovSelect" class="hsc-select-sm">
+                <option value="0.004167">15″ (Close-up)</option>
+                <option value="0.008333" selected>30″ (Standard)</option>
+                <option value="0.016667">60″ (Wide)</option>
+                <option value="0.033333">120″ (Overview)</option>
+              </select>
+            </div>
+            <div class="hsc-control-item">
+              <label for="hscSurveySelect">Survey Source:</label>
+              <select id="hscSurveySelect" class="hsc-select-sm">
+                <option value="auto" selected>Auto (HSC → Pan-STARRS)</option>
+                <option value="hsc_wide">Subaru HSC Wide</option>
+                <option value="hsc_deep">Subaru HSC Deep</option>
+                <option value="panstarrs">Pan-STARRS DR1</option>
+                <option value="dss">DSS2 Color</option>
+              </select>
+            </div>
+            <div class="hsc-fiber-note" title="Subaru PFS prime-focus fiber core diameter corresponds to ~1.12 arcsec on sky">
+              <span class="fiber-dot"></span> Circle indicates PFS ~1.1″ fiber aperture
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="modal-tabs">
         <button class="tab-btn active" data-tab="tabCandidates">Redshift Candidates</button>
         <button class="tab-btn" data-tab="tabLines">Line Measurements</button>
         <button class="tab-btn" data-tab="tabSolvers">Solver Results</button>
         <button class="tab-btn" data-tab="tabMeta">Target Metadata</button>
+        <button class="tab-btn" data-tab="tabSky">🔭 Expanded Sky View</button>
       </div>
 
       <div class="modal-body">
@@ -329,6 +410,52 @@
         <!-- Tab 4: Metadata -->
         <div class="tab-pane" id="tabMeta">
           <div class="meta-grid" id="metaGrid"></div>
+        </div>
+
+        <!-- Tab 5: Expanded Sky View -->
+        <div class="tab-pane" id="tabSky">
+          <div class="expanded-sky-view">
+            <div class="expanded-sky-img-wrap">
+              <img id="expandedSkyImg" src="" alt="Expanded Sky Cutout" style="display: none;">
+              <div class="hsc-cutout-spinner" id="expandedSkySpinner">
+                <div class="hsc-mini-spinner"></div>
+                <span>Loading high-resolution sky cutout...</span>
+              </div>
+              <div class="hsc-cutout-error" id="expandedSkyError" style="display: none;">
+                <span>⚠️ Image unavailable for this coordinate</span>
+              </div>
+              <div class="expanded-reticle" id="expandedReticle">
+                <div class="expanded-fiber-circle" id="expandedFiberCircle" title="PFS ~1.1 arcsec fiber aperture"></div>
+                <div class="hsc-reticle-crosshair-h"></div>
+                <div class="hsc-reticle-crosshair-v"></div>
+              </div>
+              <span class="hsc-fov-indicator" id="expandedFovIndicator">30″</span>
+            </div>
+            <div class="expanded-sky-desc">
+              <h5>Subaru Hyper Suprime-Cam (HSC) & Pan-STARRS Imaging</h5>
+              <p>
+                Optical multi-band color imaging of the target field.
+                The cyan circle indicates the physical <strong>~1.12 arcsec</strong> aperture of the Subaru PFS fiber core,
+                showing exactly which part of the galaxy or stellar profile was spectroscopically observed.
+              </p>
+              <div class="expanded-meta-grid">
+                <div class="meta-item"><div class="meta-label">Survey Source</div><div class="meta-val" id="expandedSurveyName">-</div></div>
+                <div class="meta-item"><div class="meta-label">Coverage Status</div><div class="meta-val" id="expandedCoverageStatus">-</div></div>
+                <div class="meta-item"><div class="meta-label">Coordinates (RA, Dec)</div><div class="meta-val" id="expandedCoords">-</div></div>
+                <div class="meta-item"><div class="meta-label">HMS / DMS</div><div class="meta-val font-mono" id="expandedSexagesimal">-</div></div>
+                <div class="meta-item"><div class="meta-label">Target ID & obCode</div><div class="meta-val" id="expandedTargetInfo">-</div></div>
+                <div class="meta-item"><div class="meta-label">Sampling Scale</div><div class="meta-val">0.168″/pixel (HSC) / 0.25″/pixel (PS1)</div></div>
+              </div>
+              <div class="expanded-actions mt-3">
+                <a id="expandedHscMapBtn" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm">
+                  🪐 Launch Full NAOJ hscMap Interactive Viewer ↗
+                </a>
+                <a id="expandedAladinBtn" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-outline-secondary btn-sm ms-2">
+                  🔭 Open in Aladin Sky Atlas ↗
+                </a>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

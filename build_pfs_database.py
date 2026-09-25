@@ -30,6 +30,7 @@ import argparse
 import sqlite3
 
 import numpy as np
+from astropy.table import Row
 from lsst.daf.butler import Butler
 from pfs.datamodel import TargetType, FiberStatus
 
@@ -429,10 +430,17 @@ def load_redshift_candidates(butler, conn, limit=None):
                     ))
 
                 if objectType != "star" and obj.lines is not None:
-                    for line in obj.lines:
+                    lines = obj.lines
+                    if isinstance(lines, Row) or (isinstance(lines, np.ndarray) and lines.ndim == 0):
+                        lines = [lines]
+                    for line in lines:
+                        try:
+                            line_name = str(line["lineName"])
+                        except (IndexError, TypeError, KeyError):
+                            continue
                         lineRows.append((
                             catId, objId, combination, objectTypeName,
-                            str(line["lineName"]), _pyval(line["lineWave"]),
+                            line_name, _pyval(line["lineWave"]),
                             _pyval(line["lineZ"]), _pyval(line["lineZError"]),
                             _pyval(line["lineSigma"]), _pyval(line["lineSigmaError"]),
                             _pyval(line["lineVelocity"]), _pyval(line["lineVelocityError"]),

@@ -212,33 +212,35 @@ CREATE TABLE IF NOT EXISTS line_measurements (
 CREATE INDEX IF NOT EXISTS idx_line_measurements_target
     ON line_measurements (catId, objId, combination);
 
-CREATE VIEW IF NOT EXISTS v_target_summary AS
-SELECT 
-    t.catId,
-    t.objId,
-    t.combination,
-    t.objGroup,
-    fc.obCode,
-    fc.targetTypeName,
-    fc.fiberStatusName,
-    fc.ra,
-    fc.dec,
-    t.classificationName,
-    t.probaGalaxy,
-    t.probaStar,
-    t.probaQSO,
-    t.bestRedshift,
-    t.bestRedshiftError,
-    t.bestVelocity,
-    t.bestVelocityError,
-    t.bestSubClass,
-    t.hasSolution
-FROM targets t
-LEFT JOIN (
-    SELECT catId, objId, obCode, targetTypeName, fiberStatusName, ra, dec,
-           ROW_NUMBER() OVER (PARTITION BY catId, objId ORDER BY visit DESC) as rn
-    FROM fiber_configs
-) fc ON t.catId = fc.catId AND t.objId = fc.objId AND fc.rn = 1;
+CREATE TABLE IF NOT EXISTS target_summary (
+    catId INTEGER NOT NULL,
+    objId INTEGER NOT NULL,
+    combination TEXT NOT NULL,
+    objGroup INTEGER,
+    obCode TEXT,
+    targetTypeName TEXT,
+    fiberStatusName TEXT,
+    ra REAL,
+    dec REAL,
+    classificationName TEXT,
+    probaGalaxy REAL,
+    probaStar REAL,
+    probaQSO REAL,
+    bestRedshift REAL,
+    bestRedshiftError REAL,
+    bestVelocity REAL,
+    bestVelocityError REAL,
+    bestSubClass TEXT,
+    hasSolution INTEGER,
+    PRIMARY KEY (catId, objId, combination)
+);
+CREATE INDEX IF NOT EXISTS idx_ts_classification ON target_summary (classificationName);
+CREATE INDEX IF NOT EXISTS idx_ts_best_redshift ON target_summary (bestRedshift);
+CREATE INDEX IF NOT EXISTS idx_ts_obcode ON target_summary (obCode);
+CREATE INDEX IF NOT EXISTS idx_ts_catid ON target_summary (catId);
+CREATE INDEX IF NOT EXISTS idx_ts_coords ON target_summary (ra, dec);
+
+CREATE VIEW IF NOT EXISTS v_target_summary AS SELECT * FROM target_summary;
 """
 
 
@@ -508,6 +510,32 @@ def load_redshift_candidates(butler, conn, limit=None):
               f"{len(lineRows)} line measurements")
 
 
+def populate_target_summary(conn):
+    """Populate target_summary materialized table from targets and latest fiber_configs."""
+    print("\nPopulating target_summary materialized table...")
+    cur = conn.cursor()
+    cur.execute("DELETE FROM target_summary")
+    cur.execute("""
+        INSERT INTO target_summary
+        SELECT 
+            t.catId, t.objId, t.combination, t.objGroup,
+            fc.obCode, fc.targetTypeName, fc.fiberStatusName, fc.ra, fc.dec,
+            t.classificationName, t.probaGalaxy, t.probaStar, t.probaQSO,
+            t.bestRedshift, t.bestRedshiftError, t.bestVelocity, t.bestVelocityError,
+            t.bestSubClass, t.hasSolution
+        FROM targets t
+        LEFT JOIN (
+            SELECT catId, objId, obCode, targetTypeName, fiberStatusName, ra, dec,
+                   ROW_NUMBER() OVER (PARTITION BY catId, objId ORDER BY visit DESC) as rn
+            FROM fiber_configs
+        ) fc ON t.catId = fc.catId AND t.objId = fc.objId AND fc.rn = 1;
+    """)
+    conn.commit()
+    cur.execute("SELECT count(*) FROM target_summary")
+    cnt = cur.fetchone()[0]
+    print(f"target_summary populated successfully with {cnt:,} rows.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -526,6 +554,8 @@ def main():
                          help="Do not (re-)populate the visits/fiber_configs tables")
     parser.add_argument("--skip-candidates", action="store_true",
                          help="Do not (re-)populate the target/candidate tables")
+    parser.add_argument("--skip-target-summary", action="store_true",
+                         help="Do not (re-)populate the target_summary table")
     args = parser.parse_args()
 
     butler = Butler(args.repo, collections=args.collections)
@@ -538,6 +568,8 @@ def main():
         load_fiber_configs(butler, conn, limit=args.limit_visits)
     if not args.skip_candidates:
         load_redshift_candidates(butler, conn, limit=args.limit_groups)
+    if not args.skip_target_summary:
+        populate_target_summary(conn)
 
     conn.close()
     print(f"Done. Database written to {args.db}")

@@ -9,9 +9,10 @@ import hashlib
 import json
 import os
 import sqlite3
+import time
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 import numpy as np
 
 from astropy.io import fits
@@ -73,13 +74,47 @@ def resolve_paths(
     return os.path.abspath(os.path.expanduser(final_db)), os.path.abspath(os.path.expanduser(final_data))
 
 
+# In-memory file index caches for ultra-fast O(1) lookups without disk/NFS I/O
+FITS_FILE_SET: Set[str] = set()
+PNG_FILE_SET: Set[str] = set()
+_FILES_INDEXED: bool = False
+
+
+def index_extracted_files(force: bool = False):
+    """Index FITS and PNG filenames once into memory sets for instant O(1) lookups."""
+    global FITS_FILE_SET, PNG_FILE_SET, _FILES_INDEXED
+    if _FILES_INDEXED and not force:
+        return
+
+    t0 = time.time()
+    fits_count = 0
+    png_count = 0
+
+    if os.path.exists(FITS_DIR):
+        try:
+            FITS_FILE_SET = set(os.listdir(FITS_DIR))
+            fits_count = len(FITS_FILE_SET)
+        except Exception as e:
+            print(f"Warning: Failed reading FITS dir {FITS_DIR}: {e}")
+
+    if os.path.exists(PNG_DIR):
+        try:
+            PNG_FILE_SET = set(os.listdir(PNG_DIR))
+            png_count = len(PNG_FILE_SET)
+        except Exception as e:
+            print(f"Warning: Failed reading PNG dir {PNG_DIR}: {e}")
+
+    _FILES_INDEXED = True
+    print(f"  ⚡ In-memory file index built in {time.time()-t0:.3f}s: {fits_count:,} FITS, {png_count:,} PNG files.")
+
+
 def configure_paths(
     target_dir: Optional[str] = None,
     db_path: Optional[str] = None,
     data_dir: Optional[str] = None,
 ):
-    """Configure global path variables and cache directories."""
-    global DB_PATH, DATA_DIR, FITS_DIR, PNG_DIR, CUTOUT_CACHE_DIR
+    """Configure global path variables, cache directories, and build file index."""
+    global DB_PATH, DATA_DIR, FITS_DIR, PNG_DIR, CUTOUT_CACHE_DIR, _FILES_INDEXED
     DB_PATH, DATA_DIR = resolve_paths(target_dir=target_dir, db_path=db_path, data_dir=data_dir)
     FITS_DIR = os.path.join(DATA_DIR, "fits")
     PNG_DIR = os.path.join(DATA_DIR, "png")
@@ -89,6 +124,8 @@ def configure_paths(
             os.makedirs(CUTOUT_CACHE_DIR, exist_ok=True)
         except OSError:
             pass
+    _FILES_INDEXED = False
+    index_extracted_files()
 
 
 # Initialize defaults
@@ -122,42 +159,44 @@ def get_db():
     return conn
 
 
+def get_summary_table(conn: sqlite3.Connection) -> str:
+    """Return target_summary if materialized table exists, otherwise fallback to v_target_summary."""
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='target_summary'")
+    if cur.fetchone():
+        return "target_summary"
+    return "v_target_summary"
+
+
 def clean_str_name(name: str) -> str:
     """Sanitize filename component."""
     return "".join(c if (c.isalnum() or c in "._-") else "_" for c in name)
 
 
 def find_files(cat_id: int, obj_id: int, ob_code: Optional[str] = None):
-    """Locate matching FITS and PNG files for a given target."""
-    fits_path = None
-    png_path = None
+    """Locate matching FITS and PNG files in O(1) time using in-memory set lookups (no glob, no disk I/O)."""
+    if not _FILES_INDEXED:
+        index_extracted_files()
 
     candidates_base = []
     if ob_code:
         candidates_base.append(clean_str_name(f"{ob_code}_{cat_id}_{obj_id}"))
     candidates_base.append(f"{cat_id}_{obj_id}")
 
+    fits_path = None
+    png_path = None
+
     for base in candidates_base:
-        f_cand = os.path.join(FITS_DIR, f"pfsObject_{base}.fits")
-        if not fits_path and os.path.exists(f_cand):
-            fits_path = f_cand
+        fn = f"pfsObject_{base}.fits"
+        if fn in FITS_FILE_SET:
+            fits_path = os.path.join(FITS_DIR, fn)
+            break
 
-        p_cand = os.path.join(PNG_DIR, f"spec_{base}.png")
-        if not png_path and os.path.exists(p_cand):
-            png_path = p_cand
-
-    # Glob fallback if not found directly
-    if not fits_path:
-        pattern = os.path.join(FITS_DIR, f"pfsObject_*{cat_id}_{obj_id}.fits")
-        matches = glob.glob(pattern)
-        if matches:
-            fits_path = matches[0]
-
-    if not png_path:
-        pattern = os.path.join(PNG_DIR, f"spec_*{cat_id}_{obj_id}.png")
-        matches = glob.glob(pattern)
-        if matches:
-            png_path = matches[0]
+    for base in candidates_base:
+        pn = f"spec_{base}.png"
+        if pn in PNG_FILE_SET:
+            png_path = os.path.join(PNG_DIR, pn)
+            break
 
     return fits_path, png_path
 
@@ -189,28 +228,36 @@ async def serve_dashboard(request: Request):
 # -----------------------------------------------------------------------------
 # API Routes
 # -----------------------------------------------------------------------------
+_STATS_CACHE: Optional[Dict[str, Any]] = None
+
+
 @app.get("/api/stats")
-def get_stats():
-    """Get repository overview statistics."""
+def get_stats(refresh: bool = Query(False, description="Force refresh statistics cache")):
+    """Get repository overview statistics (cached in memory for instant response)."""
+    global _STATS_CACHE
+    if _STATS_CACHE is not None and not refresh:
+        return _STATS_CACHE
+
     conn = get_db()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT count(*) FROM v_target_summary")
+        tbl = get_summary_table(conn)
+        cur.execute(f"SELECT count(*) FROM {tbl}")
         total = cur.fetchone()[0]
 
-        cur.execute("SELECT classificationName, count(*) FROM v_target_summary GROUP BY classificationName")
+        cur.execute(f"SELECT classificationName, count(*) FROM {tbl} GROUP BY classificationName")
         class_counts = {row[0] or "UNKNOWN": row[1] for row in cur.fetchall()}
 
-        cur.execute("SELECT count(DISTINCT catId) FROM v_target_summary")
+        cur.execute(f"SELECT count(DISTINCT catId) FROM {tbl}")
         cat_count = cur.fetchone()[0]
 
-        cur.execute("SELECT catId, count(*) FROM v_target_summary GROUP BY catId ORDER BY catId ASC")
+        cur.execute(f"SELECT catId, count(*) FROM {tbl} GROUP BY catId ORDER BY catId ASC")
         cat_counts = {int(row[0]): row[1] for row in cur.fetchall()}
 
-        cur.execute("SELECT count(DISTINCT combination) FROM v_target_summary")
+        cur.execute(f"SELECT count(DISTINCT combination) FROM {tbl}")
         comb_count = cur.fetchone()[0]
 
-        return {
+        result = {
             "total_targets": total,
             "classification_counts": class_counts,
             "catalogs_count": cat_count,
@@ -218,7 +265,10 @@ def get_stats():
             "combinations_count": comb_count,
             "db_path": DB_PATH,
             "data_dir": DATA_DIR,
+            "table_used": tbl,
         }
+        _STATS_CACHE = result
+        return result
     finally:
         conn.close()
 
@@ -236,7 +286,7 @@ def get_targets(
     sort_by: str = Query("objId", description="Sort field"),
     order: str = Query("asc", description="Sort order (asc, desc)"),
 ):
-    """Search and paginate targets from v_target_summary."""
+    """Search and paginate targets from target_summary / v_target_summary."""
     allowed_sort_fields = {
         "objId": "t.objId",
         "catId": "t.catId",
@@ -288,8 +338,10 @@ def get_targets(
     conn = get_db()
     cur = conn.cursor()
     try:
+        tbl = get_summary_table(conn)
+
         # Count total
-        count_sql = f"SELECT count(*) FROM v_target_summary t {where_sql}"
+        count_sql = f"SELECT count(*) FROM {tbl} t {where_sql}"
         cur.execute(count_sql, params)
         total = cur.fetchone()[0]
 
@@ -302,7 +354,7 @@ def get_targets(
                 t.classificationName, t.probaGalaxy, t.probaStar, t.probaQSO,
                 t.bestRedshift, t.bestRedshiftError, t.bestVelocity, t.bestVelocityError,
                 t.bestSubClass, t.hasSolution
-            FROM v_target_summary t
+            FROM {tbl} t
             {where_sql}
             ORDER BY {sort_col} {sort_order} NULLS LAST, t.objId ASC
             LIMIT ? OFFSET ?
@@ -393,11 +445,12 @@ def get_sky_positions(
     conn = get_db()
     cur = conn.cursor()
     try:
+        tbl = get_summary_table(conn)
         sql = f"""
             SELECT 
                 t.catId, t.objId, t.obCode, t.ra, t.dec,
                 t.classificationName, t.bestRedshift, t.bestVelocity
-            FROM v_target_summary t
+            FROM {tbl} t
             {where_sql}
             ORDER BY t.objId ASC
             LIMIT ?
@@ -432,9 +485,10 @@ def get_target_details(catId: int, objId: str):
     conn = get_db()
     cur = conn.cursor()
     try:
+        tbl = get_summary_table(conn)
         obj_id_int = int(objId)
         # Target summary info
-        cur.execute("SELECT * FROM v_target_summary WHERE catId = ? AND objId = ?", (catId, obj_id_int))
+        cur.execute(f"SELECT * FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
         target_row = cur.fetchone()
         if not target_row:
             raise HTTPException(status_code=404, detail="Target not found in database")
@@ -506,7 +560,8 @@ def get_spectrum_data(catId: int, objId: str):
     obj_id_int = int(objId)
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT obCode FROM v_target_summary WHERE catId = ? AND objId = ?", (catId, obj_id_int))
+    tbl = get_summary_table(conn)
+    cur.execute(f"SELECT obCode FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
     row = cur.fetchone()
     conn.close()
     ob_code = row[0] if row else None
@@ -592,7 +647,8 @@ def get_spectrum_image(catId: int, objId: str):
     obj_id_int = int(objId)
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT obCode FROM v_target_summary WHERE catId = ? AND objId = ?", (catId, obj_id_int))
+    tbl = get_summary_table(conn)
+    cur.execute(f"SELECT obCode FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
     row = cur.fetchone()
     conn.close()
     ob_code = row[0] if row else None
@@ -609,7 +665,8 @@ def download_fits(catId: int, objId: str):
     obj_id_int = int(objId)
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT obCode FROM v_target_summary WHERE catId = ? AND objId = ?", (catId, obj_id_int))
+    tbl = get_summary_table(conn)
+    cur.execute(f"SELECT obCode FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
     row = cur.fetchone()
     conn.close()
     ob_code = row[0] if row else None

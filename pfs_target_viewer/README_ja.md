@@ -138,13 +138,33 @@ ssh -L 8090:localhost:8090 user@<remote-host>
 
 ---
 
-## コマンドライン引数
+## コマンドライン引数 / データディレクトリの指定
+
+`pfs_metadata.sqlite3` と `extracted_targets/` が存在するディレクトリを直接指定して起動できます。
 
 ```bash
-python app.py [-h] [--host HOST] [--port PORT] [--db DB] [--data-dir DATA_DIR]
+# 方法 1: 位置引数でディレクトリを指定（推奨・最もシンプル）
+./run_viewer.sh /path/to/dataset
+python app.py /path/to/dataset
+
+# 方法 2: --dir (-d) オプションで指定
+./run_viewer.sh --dir /path/to/dataset
+python app.py -d /path/to/dataset
+
+# 方法 3: 環境変数で指定
+export PFS_DIR=/path/to/dataset
+./run_viewer.sh
 ```
 
+### 引数一覧
+
+```bash
+python app.py [-h] [-d OPT_DIR] [--host HOST] [--port PORT] [--db DB] [--data-dir DATA_DIR] [target_dir]
+```
+
+- `target_dir` (位置引数): `pfs_metadata.sqlite3` と `extracted_targets/` が存在するディレクトリパス（省略時はデフォルトで `..`）
+- `-d, --dir, --dataset-dir`: `pfs_metadata.sqlite3` と `extracted_targets/` が存在するディレクトリパス
 - `--host`: バインドするホスト名（デフォルト: `0.0.0.0`）
 - `--port`: リッスンするポート番号（デフォルト: `8090`）
-- `--db`: SQLite データベースファイルへのパス（デフォルト: `../pfs_metadata.sqlite3`）
-- `--data-dir`: FITS / PNG が配置されたディレクトリ（デフォルト: `../extracted_targets`）
+- `--db`: SQLite データベースファイルへの個別明示パス（個別指定時に `--dir` より優先）
+- `--data-dir`: `extracted_targets` ディレクトリへの個別明示パス（個別指定時に `--dir` より優先）

@@ -138,18 +138,36 @@ ssh -L 8090:localhost:8090 yasuda@<remote-host>
 
 ---
 
-## コマンドライン引数
+## Command Line Arguments & Data Directory
 
-`app.py` は以下の起動オプションに対応しています：
+You can directly specify the directory containing `pfs_metadata.sqlite3` and `extracted_targets/` when starting the server:
 
 ```bash
-python app.py [-h] [--host HOST] [--port PORT] [--db DB] [--data-dir DATA_DIR]
+# Method 1: Specify directory as a positional argument (Recommended)
+./run_viewer.sh /path/to/dataset
+python app.py /path/to/dataset
+
+# Method 2: Specify directory via --dir (-d)
+./run_viewer.sh --dir /path/to/dataset
+python app.py -d /path/to/dataset
+
+# Method 3: Specify directory via environment variable
+export PFS_DIR=/path/to/dataset
+./run_viewer.sh
 ```
 
-- `--host`: バインドするホスト名（デフォルト: `0.0.0.0`）
-- `--port`: リッスンするポート番号（デフォルト: `8090`）
-- `--db`: SQLite データベースファイルへのパス（デフォルト: `../pfs_metadata.sqlite3`）
-- `--data-dir`: FITS / PNG が配置されたディレクトリ（デフォルト: `../extracted_targets`）
+### Argument List
+
+```bash
+python app.py [-h] [-d OPT_DIR] [--host HOST] [--port PORT] [--db DB] [--data-dir DATA_DIR] [target_dir]
+```
+
+- `target_dir` (positional): Path to directory containing `pfs_metadata.sqlite3` and `extracted_targets/` (default: `..`)
+- `-d, --dir, --dataset-dir`: Path to directory containing `pfs_metadata.sqlite3` and `extracted_targets/`
+- `--host`: Host interface to bind (default: `0.0.0.0`)
+- `--port`: Port to listen on (default: `8090`)
+- `--db`: Explicit path to SQLite database (overrides `--dir`)
+- `--data-dir`: Explicit path to `extracted_targets` directory (overrides `--dir`)
 
 ---
 

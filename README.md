@@ -122,6 +122,9 @@ The web application is **completely independent of the PFS pipeline (`pfs_pipe2d
 ```bash
 cd pfs_target_viewer
 ./run_viewer.sh
+
+# If pfs_metadata.sqlite3 and extracted_targets/ are in a different directory:
+./run_viewer.sh /path/to/dataset
 ```
 
 Then open `http://localhost:8090` in your web browser.

@@ -122,6 +122,9 @@ python download_data.py
 ```bash
 cd pfs_target_viewer
 ./run_viewer.sh
+
+# 別のディレクトリに pfs_metadata.sqlite3 と extracted_targets/ がある場合:
+./run_viewer.sh /path/to/dataset
 ```
 
 ブラウザで `http://localhost:8090` にアクセスします。

@@ -23,15 +23,76 @@ from fastapi.templating import Jinja2Templates
 
 # Base directories
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_DB_PATH = os.path.abspath(os.path.join(BASE_DIR, "..", "pfs_metadata.sqlite3"))
-DEFAULT_DATA_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "extracted_targets"))
+DEFAULT_BASE_DATA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 
-DB_PATH = os.getenv("PFS_DB_PATH", DEFAULT_DB_PATH)
-DATA_DIR = os.getenv("PFS_DATA_DIR", DEFAULT_DATA_DIR)
-FITS_DIR = os.path.join(DATA_DIR, "fits")
-PNG_DIR = os.path.join(DATA_DIR, "png")
-CUTOUT_CACHE_DIR = os.path.join(DATA_DIR, "cutout_cache")
-os.makedirs(CUTOUT_CACHE_DIR, exist_ok=True)
+DB_PATH = ""
+DATA_DIR = ""
+FITS_DIR = ""
+PNG_DIR = ""
+CUTOUT_CACHE_DIR = ""
+
+
+def resolve_paths(
+    target_dir: Optional[str] = None,
+    db_path: Optional[str] = None,
+    data_dir: Optional[str] = None,
+) -> tuple[str, str]:
+    """Resolve database path and data directory from user inputs, environment variables, or defaults."""
+    # 1. Determine base dataset directory
+    raw_dir = (
+        target_dir
+        or os.getenv("PFS_DATA_ROOT")
+        or os.getenv("PFS_DIR")
+        or os.getenv("PFS_DATASET_DIR")
+    )
+
+    if raw_dir:
+        resolved_base = os.path.abspath(os.path.expanduser(raw_dir))
+    else:
+        resolved_base = DEFAULT_BASE_DATA_DIR
+
+    # Candidate defaults based on resolved_base
+    if resolved_base.endswith((".sqlite3", ".db")) or os.path.isfile(resolved_base):
+        candidate_db = resolved_base
+        parent_dir = os.path.dirname(resolved_base)
+        candidate_data_dir = os.path.join(parent_dir, "extracted_targets")
+    else:
+        candidate_db = os.path.join(resolved_base, "pfs_metadata.sqlite3")
+        # Check if resolved_base directly contains extracted_targets or is extracted_targets itself
+        if os.path.isdir(os.path.join(resolved_base, "extracted_targets")):
+            candidate_data_dir = os.path.join(resolved_base, "extracted_targets")
+        elif os.path.isdir(os.path.join(resolved_base, "fits")):
+            candidate_data_dir = resolved_base
+        else:
+            candidate_data_dir = os.path.join(resolved_base, "extracted_targets")
+
+    # 2. Explicit overrides (cmdline or specific env vars) take precedence
+    final_db = db_path or os.getenv("PFS_DB_PATH") or candidate_db
+    final_data = data_dir or os.getenv("PFS_DATA_DIR") or candidate_data_dir
+
+    return os.path.abspath(os.path.expanduser(final_db)), os.path.abspath(os.path.expanduser(final_data))
+
+
+def configure_paths(
+    target_dir: Optional[str] = None,
+    db_path: Optional[str] = None,
+    data_dir: Optional[str] = None,
+):
+    """Configure global path variables and cache directories."""
+    global DB_PATH, DATA_DIR, FITS_DIR, PNG_DIR, CUTOUT_CACHE_DIR
+    DB_PATH, DATA_DIR = resolve_paths(target_dir=target_dir, db_path=db_path, data_dir=data_dir)
+    FITS_DIR = os.path.join(DATA_DIR, "fits")
+    PNG_DIR = os.path.join(DATA_DIR, "png")
+    CUTOUT_CACHE_DIR = os.path.join(DATA_DIR, "cutout_cache")
+    if os.path.exists(DATA_DIR):
+        try:
+            os.makedirs(CUTOUT_CACHE_DIR, exist_ok=True)
+        except OSError:
+            pass
+
+
+# Initialize defaults
+configure_paths()
 
 app = FastAPI(
     title="PFS Target & Spectrum Viewer",
@@ -734,27 +795,66 @@ if __name__ == "__main__":
     import argparse
     import uvicorn
 
-    parser = argparse.ArgumentParser(description="PFS Target & Spectrum Viewer Server")
+    parser = argparse.ArgumentParser(
+        description="PFS Target & Spectrum Viewer Server",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # 1. Specify directory containing pfs_metadata.sqlite3 and extracted_targets/ (Positional):
+  python app.py /path/to/dataset
+  ./run_viewer.sh /path/to/dataset
+
+  # 2. Specify directory via flag (-d / --dir / --dataset-dir):
+  python app.py -d /path/to/dataset
+  ./run_viewer.sh --dir /path/to/dataset
+
+  # 3. Specify custom host or port:
+  python app.py /path/to/dataset --port 8080 --host 0.0.0.0
+
+  # 4. Explicitly specify database and extracted_targets directory separately:
+  python app.py --db /path/to/pfs_metadata.sqlite3 --data-dir /path/to/extracted_targets
+"""
+    )
+    parser.add_argument("target_dir", nargs="?", default=None,
+                        help="Directory containing pfs_metadata.sqlite3 and extracted_targets/ (optional)")
+    parser.add_argument("-d", "--dir", "--dataset-dir", dest="opt_dir", default=None,
+                        help="Directory containing pfs_metadata.sqlite3 and extracted_targets/")
     parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8090, help="Port to listen on (default: 8090)")
-    parser.add_argument("--db", default=None, help="Path to pfs_metadata.sqlite3")
-    parser.add_argument("--data-dir", default=None, help="Path to extracted_targets directory")
+    parser.add_argument("--db", default=None, help="Explicit path to pfs_metadata.sqlite3")
+    parser.add_argument("--data-dir", default=None, help="Explicit path to extracted_targets directory")
     args = parser.parse_args()
 
-    if args.db:
-        DB_PATH = os.path.abspath(args.db)
-    if args.data_dir:
-        DATA_DIR = os.path.abspath(args.data_dir)
-        FITS_DIR = os.path.join(DATA_DIR, "fits")
-        PNG_DIR = os.path.join(DATA_DIR, "png")
-        CUTOUT_CACHE_DIR = os.path.join(DATA_DIR, "cutout_cache")
-        os.makedirs(CUTOUT_CACHE_DIR, exist_ok=True)
+    chosen_dir = args.opt_dir or args.target_dir
+    configure_paths(target_dir=chosen_dir, db_path=args.db, data_dir=args.data_dir)
 
-    print("=" * 65)
+    # Status check for logging
+    if os.path.exists(DB_PATH):
+        db_size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
+        db_size_str = f"{db_size_mb / 1024:.2f} GB" if db_size_mb >= 1024 else f"{db_size_mb:.1f} MB"
+        db_status = f"✅ Found ({db_size_str})"
+    else:
+        db_status = "⚠️  NOT FOUND"
+
+    if os.path.exists(DATA_DIR):
+        fits_count = len(glob.glob(os.path.join(FITS_DIR, "*.fits"))) if os.path.exists(FITS_DIR) else 0
+        png_count = len(glob.glob(os.path.join(PNG_DIR, "*.png"))) if os.path.exists(PNG_DIR) else 0
+        data_status = f"✅ Found ({fits_count:,} FITS, {png_count:,} PNG)"
+    else:
+        data_status = "⚠️  NOT FOUND"
+
+    print("=" * 70)
     print("  🌌 Starting PFS Target & Spectrum Viewer")
-    print(f"  📂 Database: {DB_PATH}")
-    print(f"  📁 Data dir: {DATA_DIR}")
-    print(f"  🌐 URL:      http://{args.host}:{args.port}")
-    print("=" * 65)
+    if chosen_dir:
+        print(f"  📍 Specified Dir: {os.path.abspath(chosen_dir)}")
+    print(f"  📂 Database:      {DB_PATH} [{db_status}]")
+    print(f"  📁 Data Dir:      {DATA_DIR} [{data_status}]")
+    print(f"  🌐 URL:           http://{args.host}:{args.port}")
+    if not os.path.exists(DB_PATH) or not os.path.exists(DATA_DIR):
+        print("-" * 70)
+        print("  ⚠️  Notice: One or more data targets were not found.")
+        print("     Please ensure the directory contains 'pfs_metadata.sqlite3'")
+        print("     and 'extracted_targets/' (or run download_data.sh).")
+    print("=" * 70)
 
     uvicorn.run(app, host=args.host, port=args.port)

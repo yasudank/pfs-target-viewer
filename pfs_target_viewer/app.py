@@ -159,6 +159,24 @@ def get_db():
     return conn
 
 
+_DB_HAS_FILE_COLS: Optional[bool] = None
+
+
+def check_db_file_columns(conn: sqlite3.Connection) -> bool:
+    """Check if target_summary has has_fits, fits_path, has_png, png_path columns."""
+    global _DB_HAS_FILE_COLS
+    if _DB_HAS_FILE_COLS is not None:
+        return _DB_HAS_FILE_COLS
+    try:
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(target_summary)")
+        cols = {row[1] for row in cur.fetchall()}
+        _DB_HAS_FILE_COLS = "has_fits" in cols and "fits_path" in cols
+    except Exception:
+        _DB_HAS_FILE_COLS = False
+    return _DB_HAS_FILE_COLS
+
+
 def get_summary_table(conn: sqlite3.Connection) -> str:
     """Return target_summary if materialized table exists, otherwise fallback to v_target_summary."""
     cur = conn.cursor()
@@ -173,30 +191,84 @@ def clean_str_name(name: str) -> str:
     return "".join(c if (c.isalnum() or c in "._-") else "_" for c in name)
 
 
-def find_files(cat_id: int, obj_id: int, ob_code: Optional[str] = None):
-    """Locate matching FITS and PNG files in O(1) time using in-memory set lookups (no glob, no disk I/O)."""
-    if not _FILES_INDEXED:
-        index_extracted_files()
+def find_files(
+    cat_id: int,
+    obj_id: int,
+    ob_code: Optional[str] = None,
+    known_fits_path: Optional[str] = None,
+    known_png_path: Optional[str] = None,
+):
+    """
+    Locate matching FITS and PNG files.
+    Priority:
+    1. Direct DB recorded relative path (known_fits_path, known_png_path)
+    2. Sharded location: fits/{catId}/{slot:03d}/pfsObject_{base}.fits
+    3. Flat location: fits/pfsObject_{base}.fits (checked via in-memory set)
+    """
+    fits_path = None
+    png_path = None
 
+    # 1. Use known DB paths if provided and existing
+    if known_fits_path:
+        p = os.path.join(DATA_DIR, known_fits_path) if not os.path.isabs(known_fits_path) else known_fits_path
+        if os.path.exists(p):
+            fits_path = p
+    if known_png_path:
+        p = os.path.join(DATA_DIR, known_png_path) if not os.path.isabs(known_png_path) else known_png_path
+        if os.path.exists(p):
+            png_path = p
+
+    if fits_path and png_path:
+        return fits_path, png_path
+
+    # Candidate basenames
     candidates_base = []
     if ob_code:
         candidates_base.append(clean_str_name(f"{ob_code}_{cat_id}_{obj_id}"))
     candidates_base.append(f"{cat_id}_{obj_id}")
 
-    fits_path = None
-    png_path = None
+    shard_slot = f"{int(obj_id) % 1000:03d}"
+    shard_sub = os.path.join(str(cat_id), shard_slot)
 
-    for base in candidates_base:
-        fn = f"pfsObject_{base}.fits"
-        if fn in FITS_FILE_SET:
-            fits_path = os.path.join(FITS_DIR, fn)
-            break
+    # 2. Check sharded location on disk
+    if not fits_path:
+        shard_fits_dir = os.path.join(FITS_DIR, shard_sub)
+        for base in candidates_base:
+            fn = f"pfsObject_{base}.fits"
+            p = os.path.join(shard_fits_dir, fn)
+            if os.path.exists(p):
+                fits_path = p
+                break
 
-    for base in candidates_base:
-        pn = f"spec_{base}.png"
-        if pn in PNG_FILE_SET:
-            png_path = os.path.join(PNG_DIR, pn)
-            break
+    if not png_path:
+        shard_png_dir = os.path.join(PNG_DIR, shard_sub)
+        for base in candidates_base:
+            pn = f"spec_{base}.png"
+            p = os.path.join(shard_png_dir, pn)
+            if os.path.exists(p):
+                png_path = p
+                break
+
+    if fits_path and png_path:
+        return fits_path, png_path
+
+    # 3. Fallback to flat directory via in-memory set
+    if not _FILES_INDEXED:
+        index_extracted_files()
+
+    if not fits_path:
+        for base in candidates_base:
+            fn = f"pfsObject_{base}.fits"
+            if fn in FITS_FILE_SET:
+                fits_path = os.path.join(FITS_DIR, fn)
+                break
+
+    if not png_path:
+        for base in candidates_base:
+            pn = f"spec_{base}.png"
+            if pn in PNG_FILE_SET:
+                png_path = os.path.join(PNG_DIR, pn)
+                break
 
     return fits_path, png_path
 
@@ -281,6 +353,8 @@ def get_targets(
     max_z: Optional[float] = Query(None, description="Maximum redshift"),
     cat_id: Optional[int] = Query(None, description="Filter by catId"),
     combination: Optional[str] = Query(None, description="Filter by combination"),
+    has_fits: Optional[bool] = Query(None, description="Filter targets that have FITS files"),
+    has_png: Optional[bool] = Query(None, description="Filter targets that have PNG spectra"),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     limit: int = Query(25, ge=5, le=100, description="Items per page"),
     sort_by: str = Query("objId", description="Sort field"),
@@ -333,12 +407,21 @@ def get_targets(
         where_clauses.append("t.combination = ?")
         params.append(combination)
 
-    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
-
     conn = get_db()
     cur = conn.cursor()
     try:
         tbl = get_summary_table(conn)
+        has_file_cols = check_db_file_columns(conn)
+
+        if has_file_cols:
+            if has_fits is not None:
+                where_clauses.append("t.has_fits = ?")
+                params.append(1 if has_fits else 0)
+            if has_png is not None:
+                where_clauses.append("t.has_png = ?")
+                params.append(1 if has_png else 0)
+
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
         # Count total
         count_sql = f"SELECT count(*) FROM {tbl} t {where_sql}"
@@ -347,13 +430,16 @@ def get_targets(
 
         # Fetch page items
         offset = (page - 1) * limit
+        file_select = "t.has_fits, t.fits_path, t.has_png, t.png_path," if has_file_cols else ""
         data_sql = f"""
             SELECT 
                 t.catId, t.objId, t.combination, t.objGroup,
                 t.obCode, t.targetTypeName, t.fiberStatusName, t.ra, t.dec,
                 t.classificationName, t.probaGalaxy, t.probaStar, t.probaQSO,
                 t.bestRedshift, t.bestRedshiftError, t.bestVelocity, t.bestVelocityError,
-                t.bestSubClass, t.hasSolution
+                t.bestSubClass, t.hasSolution,
+                {file_select}
+                1 AS _dummy
             FROM {tbl} t
             {where_sql}
             ORDER BY {sort_col} {sort_order} NULLS LAST, t.objId ASC
@@ -368,11 +454,32 @@ def get_targets(
             cat_val = d["catId"]
             obj_val = d["objId"]
             ob_val = d["obCode"]
-            fits_file, png_file = find_files(cat_val, obj_val, ob_val)
+
+            # Check if file presence already resolved by DB
+            rec_has_fits = bool(d.get("has_fits")) if has_file_cols else False
+            rec_fits_path = d.get("fits_path") if has_file_cols else None
+            rec_has_png = bool(d.get("has_png")) if has_file_cols else False
+            rec_png_path = d.get("png_path") if has_file_cols else None
+
+            if rec_has_fits and rec_has_png:
+                # 100% resolved from DB, zero filesystem check!
+                final_has_fits = True
+                final_has_png = True
+            else:
+                # Fallback to filesystem lookup
+                f_path, p_path = find_files(
+                    cat_val,
+                    obj_val,
+                    ob_val,
+                    known_fits_path=rec_fits_path if rec_has_fits else None,
+                    known_png_path=rec_png_path if rec_has_png else None,
+                )
+                final_has_fits = rec_has_fits or (f_path is not None)
+                final_has_png = rec_has_png or (p_path is not None)
 
             d["objId"] = str(d["objId"])
-            d["has_fits"] = fits_file is not None
-            d["has_png"] = png_file is not None
+            d["has_fits"] = final_has_fits
+            d["has_png"] = final_has_png
             d["ra"] = sanitize_val(d.get("ra"))
             d["dec"] = sanitize_val(d.get("dec"))
             d["bestRedshift"] = sanitize_val(d.get("bestRedshift"))
@@ -382,6 +489,7 @@ def get_targets(
             d["probaGalaxy"] = sanitize_val(d.get("probaGalaxy"))
             d["probaStar"] = sanitize_val(d.get("probaStar"))
             d["probaQSO"] = sanitize_val(d.get("probaQSO"))
+            d.pop("_dummy", None)
             results.append(d)
 
         pages = (total + limit - 1) // limit if limit > 0 else 1
@@ -533,7 +641,13 @@ def get_target_details(catId: int, objId: str):
             rd["objId"] = str(rd.get("objId", ""))
             line_rows.append(rd)
 
-        fits_file, png_file = find_files(catId, obj_id_int, target_info.get("obCode"))
+        fits_file, png_file = find_files(
+            catId,
+            obj_id_int,
+            target_info.get("obCode"),
+            known_fits_path=target_info.get("fits_path"),
+            known_png_path=target_info.get("png_path"),
+        )
 
         return {
             "target": target_info,
@@ -561,12 +675,16 @@ def get_spectrum_data(catId: int, objId: str):
     conn = get_db()
     cur = conn.cursor()
     tbl = get_summary_table(conn)
-    cur.execute(f"SELECT obCode FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
+    has_file_cols = check_db_file_columns(conn)
+    file_cols_sql = ", fits_path, png_path" if has_file_cols else ""
+    cur.execute(f"SELECT obCode {file_cols_sql} FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
     row = cur.fetchone()
     conn.close()
-    ob_code = row[0] if row else None
 
-    fits_file, _ = find_files(catId, obj_id_int, ob_code)
+    ob_code = row["obCode"] if row else None
+    known_fits = row["fits_path"] if (row and has_file_cols and "fits_path" in row.keys()) else None
+
+    fits_file, _ = find_files(catId, obj_id_int, ob_code, known_fits_path=known_fits)
     if not fits_file or not os.path.exists(fits_file):
         raise HTTPException(status_code=404, detail=f"FITS file for target catId={catId}, objId={objId} not found")
 
@@ -648,12 +766,16 @@ def get_spectrum_image(catId: int, objId: str):
     conn = get_db()
     cur = conn.cursor()
     tbl = get_summary_table(conn)
-    cur.execute(f"SELECT obCode FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
+    has_file_cols = check_db_file_columns(conn)
+    file_cols_sql = ", png_path" if has_file_cols else ""
+    cur.execute(f"SELECT obCode {file_cols_sql} FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
     row = cur.fetchone()
     conn.close()
-    ob_code = row[0] if row else None
 
-    _, png_file = find_files(catId, obj_id_int, ob_code)
+    ob_code = row["obCode"] if row else None
+    known_png = row["png_path"] if (row and has_file_cols and "png_path" in row.keys()) else None
+
+    _, png_file = find_files(catId, obj_id_int, ob_code, known_png_path=known_png)
     if not png_file or not os.path.exists(png_file):
         raise HTTPException(status_code=404, detail="Spectrum PNG image not found")
     return FileResponse(png_file, media_type="image/png")
@@ -666,12 +788,16 @@ def download_fits(catId: int, objId: str):
     conn = get_db()
     cur = conn.cursor()
     tbl = get_summary_table(conn)
-    cur.execute(f"SELECT obCode FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
+    has_file_cols = check_db_file_columns(conn)
+    file_cols_sql = ", fits_path" if has_file_cols else ""
+    cur.execute(f"SELECT obCode {file_cols_sql} FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
     row = cur.fetchone()
     conn.close()
-    ob_code = row[0] if row else None
 
-    fits_file, _ = find_files(catId, obj_id_int, ob_code)
+    ob_code = row["obCode"] if row else None
+    known_fits = row["fits_path"] if (row and has_file_cols and "fits_path" in row.keys()) else None
+
+    fits_file, _ = find_files(catId, obj_id_int, ob_code, known_fits_path=known_fits)
     if not fits_file or not os.path.exists(fits_file):
         raise HTTPException(status_code=404, detail="FITS file not found")
     filename = os.path.basename(fits_file)

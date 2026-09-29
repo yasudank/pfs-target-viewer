@@ -274,6 +274,10 @@ def main():
                         help="Skip generating PNG spectrum plots")
     parser.add_argument("--fits-naming", choices=["custom", "standard"], default="custom",
                         help="FITS filename format: 'custom' (pfsObject_{catId}_{objId}.fits) or 'standard' (pfsObject-10356-00001-...)")
+    parser.add_argument("--no-shard", action="store_true",
+                        help="Disable 2-level directory sharding (catId/objId%%1000) and save to flat directory")
+    parser.add_argument("--no-update-db", action="store_true",
+                        help="Do not update target_summary table in database with output file paths")
     parser.add_argument("--overwrite", action="store_true",
                         help="Overwrite existing output files")
     args = parser.parse_args()
@@ -310,6 +314,7 @@ def main():
     processed_count = 0
     fits_count = 0
     png_count = 0
+    db_updates = []
 
     for i, tinfo in enumerate(targets):
         catId = tinfo["catId"]
@@ -358,20 +363,42 @@ def main():
         # Sanitize filename
         safe_base_name = "".join(c if (c.isalnum() or c in "._-") else "_" for c in base_name)
 
+        # Determine output directories (Sharded vs Flat)
+        if args.no_shard:
+            target_fits_dir = fits_dir
+            target_png_dir = png_dir
+            rel_fits_sub = ""
+            rel_png_sub = ""
+        else:
+            shard_sub = os.path.join(str(catId), f"{int(objId) % 1000:03d}")
+            target_fits_dir = os.path.join(fits_dir, shard_sub)
+            target_png_dir = os.path.join(png_dir, shard_sub)
+            rel_fits_sub = shard_sub
+            rel_png_sub = shard_sub
+
+        saved_fits_rel = None
+        saved_png_rel = None
+
         # 1. Save FITS
         if not args.skip_fits:
+            os.makedirs(target_fits_dir, exist_ok=True)
             if args.fits_naming == "standard":
-                pfsObj.write(fits_dir)
+                pfsObj.write(target_fits_dir)
                 fits_count += 1
+                saved_fits_rel = os.path.join("fits", rel_fits_sub) if rel_fits_sub else "fits"
             else:
-                fits_path = os.path.join(fits_dir, f"pfsObject_{safe_base_name}.fits")
+                fits_filename = f"pfsObject_{safe_base_name}.fits"
+                fits_path = os.path.join(target_fits_dir, fits_filename)
                 if args.overwrite or not os.path.exists(fits_path):
                     pfsObj.writeFits(fits_path)
                     fits_count += 1
+                saved_fits_rel = os.path.join("fits", rel_fits_sub, fits_filename) if rel_fits_sub else os.path.join("fits", fits_filename)
 
         # 2. Save PNG
         if not args.skip_png:
-            png_path = os.path.join(png_dir, f"spec_{safe_base_name}.png")
+            os.makedirs(target_png_dir, exist_ok=True)
+            png_filename = f"spec_{safe_base_name}.png"
+            png_path = os.path.join(target_png_dir, png_filename)
             if args.overwrite or not os.path.exists(png_path):
                 title_parts = [f"objId: {objId}"]
                 if obCode:
@@ -391,10 +418,40 @@ def main():
                     bin_width=args.bin_width if args.bin_width > 0 else None,
                 )
                 png_count += 1
+            saved_png_rel = os.path.join("png", rel_png_sub, png_filename) if rel_png_sub else os.path.join("png", png_filename)
+
+        if not args.no_update_db:
+            db_updates.append((
+                1 if saved_fits_rel else 0,
+                saved_fits_rel,
+                1 if saved_png_rel else 0,
+                saved_png_rel,
+                catId,
+                objId,
+            ))
 
         processed_count += 1
         if (i + 1) % 10 == 0 or (i + 1) == len(targets):
             print(f"  Processed [{i + 1}/{len(targets)}] targets (FITS: {fits_count}, PNG: {png_count})")
+
+    if not args.no_update_db and db_updates:
+        print(f"\nUpdating file paths in {args.db} for {len(db_updates)} targets...")
+        try:
+            conn = sqlite3.connect(args.db)
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(target_summary)")
+            cols = {row[1] for row in cur.fetchall()}
+            if "has_fits" in cols:
+                cur.executemany("""
+                    UPDATE target_summary
+                    SET has_fits = ?, fits_path = ?, has_png = ?, png_path = ?
+                    WHERE catId = ? AND objId = ?;
+                """, db_updates)
+                conn.commit()
+                print("  Database target_summary table updated successfully.")
+            conn.close()
+        except Exception as e:
+            print(f"  Warning: Failed to update database: {e}", file=sys.stderr)
 
     print("\n" + "=" * 60)
     print(f"Finished. Total processed: {processed_count} targets")

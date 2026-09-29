@@ -232,6 +232,10 @@ CREATE TABLE IF NOT EXISTS target_summary (
     bestVelocityError REAL,
     bestSubClass TEXT,
     hasSolution INTEGER,
+    has_fits INTEGER DEFAULT 0,
+    fits_path TEXT,
+    has_png INTEGER DEFAULT 0,
+    png_path TEXT,
     PRIMARY KEY (catId, objId, combination)
 );
 CREATE INDEX IF NOT EXISTS idx_ts_classification ON target_summary (classificationName);
@@ -239,6 +243,8 @@ CREATE INDEX IF NOT EXISTS idx_ts_best_redshift ON target_summary (bestRedshift)
 CREATE INDEX IF NOT EXISTS idx_ts_obcode ON target_summary (obCode);
 CREATE INDEX IF NOT EXISTS idx_ts_catid ON target_summary (catId);
 CREATE INDEX IF NOT EXISTS idx_ts_coords ON target_summary (ra, dec);
+CREATE INDEX IF NOT EXISTS idx_ts_has_fits ON target_summary (has_fits);
+CREATE INDEX IF NOT EXISTS idx_ts_has_png ON target_summary (has_png);
 
 CREATE VIEW IF NOT EXISTS v_target_summary AS SELECT * FROM target_summary;
 """
@@ -516,13 +522,21 @@ def populate_target_summary(conn):
     cur = conn.cursor()
     cur.execute("DELETE FROM target_summary")
     cur.execute("""
-        INSERT INTO target_summary
+        INSERT INTO target_summary (
+            catId, objId, combination, objGroup,
+            obCode, targetTypeName, fiberStatusName, ra, dec,
+            classificationName, probaGalaxy, probaStar, probaQSO,
+            bestRedshift, bestRedshiftError, bestVelocity, bestVelocityError,
+            bestSubClass, hasSolution,
+            has_fits, fits_path, has_png, png_path
+        )
         SELECT 
             t.catId, t.objId, t.combination, t.objGroup,
             fc.obCode, fc.targetTypeName, fc.fiberStatusName, fc.ra, fc.dec,
             t.classificationName, t.probaGalaxy, t.probaStar, t.probaQSO,
             t.bestRedshift, t.bestRedshiftError, t.bestVelocity, t.bestVelocityError,
-            t.bestSubClass, t.hasSolution
+            t.bestSubClass, t.hasSolution,
+            0, NULL, 0, NULL
         FROM targets t
         LEFT JOIN (
             SELECT catId, objId, obCode, targetTypeName, fiberStatusName, ra, dec,

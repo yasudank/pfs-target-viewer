@@ -553,6 +553,8 @@ async function fetchTargets() {
   }
   if (state.min_z !== null) params.append("min_z", state.min_z);
   if (state.max_z !== null) params.append("max_z", state.max_z);
+  if (state.has_fits !== null && state.has_fits !== undefined) params.append("has_fits", state.has_fits);
+  if (state.has_png !== null && state.has_png !== undefined) params.append("has_png", state.has_png);
 
   try {
     const res = await fetch(`/api/targets?${params.toString()}`);

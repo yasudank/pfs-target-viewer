@@ -6,6 +6,7 @@ PNG spectra, and interactive FITS spectra from pfs_metadata.sqlite3 and extracte
 """
 import glob
 import hashlib
+import io
 import json
 import os
 import sqlite3
@@ -14,6 +15,11 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Set
 import numpy as np
+try:
+    from PIL import Image, ImageStat
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
 from astropy.io import fits
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -108,6 +114,69 @@ def index_extracted_files(force: bool = False):
     print(f"  ⚡ In-memory file index built in {time.time()-t0:.3f}s: {fits_count:,} FITS, {png_count:,} PNG files.")
 
 
+def is_blank_or_out_of_coverage(data: bytes) -> bool:
+    """
+    Check if returned image is an empty/blank/constant-value frame generated
+    when target coordinates are outside astronomical survey coverage
+    (e.g., pure white dummy frames of ~4955 bytes from HSC, or pure black frames).
+    """
+    if not data or len(data) < 100:
+        return True
+    if len(data) < 2000:
+        return True
+
+    if HAS_PIL:
+        try:
+            with Image.open(io.BytesIO(data)) as img:
+                gray = img.convert("L")
+                stat = ImageStat.Stat(gray)
+                min_val, max_val = stat.extrema[0]
+                # 1. Pure constant pixel value (min == max)
+                if min_val == max_val:
+                    return True
+                # 2. Negligible dynamic range (compression noise on constant background)
+                if (max_val - min_val) < 5:
+                    return True
+                # 3. Standard deviation check (real sky cutouts have stddev > 2.0 due to noise/stars)
+                std_val = stat.stddev[0]
+                if std_val < 1.0:
+                    return True
+                # 4. Extreme uniform backgrounds (almost pure white > 250 or pure black < 1.0)
+                mean_val = stat.mean[0]
+                if mean_val > 250.0 or mean_val < 1.0:
+                    return True
+        except Exception:
+            return True
+    else:
+        # Fallback if PIL is not installed: catch known HSC/CDS placeholder byte signatures
+        if 4900 <= len(data) <= 5000:
+            return True
+
+    return False
+
+
+def cleanup_blank_cutout_cache():
+    """Scan cutout_cache directory and purge previously cached blank/dummy frames."""
+    if not os.path.exists(CUTOUT_CACHE_DIR):
+        return
+    removed = 0
+    for img_path in glob.glob(os.path.join(CUTOUT_CACHE_DIR, "*.jpg")):
+        try:
+            with open(img_path, "rb") as f:
+                data = f.read()
+            if is_blank_or_out_of_coverage(data):
+                meta_path = img_path.replace(".jpg", ".json")
+                if os.path.exists(img_path):
+                    os.remove(img_path)
+                if os.path.exists(meta_path):
+                    os.remove(meta_path)
+                removed += 1
+        except Exception:
+            pass
+    if removed > 0:
+        print(f"  🧹 Cleaned up {removed} blank/dummy cutout image(s) from cache.")
+
+
 def configure_paths(
     target_dir: Optional[str] = None,
     db_path: Optional[str] = None,
@@ -126,6 +195,7 @@ def configure_paths(
             pass
     _FILES_INDEXED = False
     index_extracted_files()
+    cleanup_blank_cutout_cache()
 
 
 # Initialize defaults
@@ -849,16 +919,6 @@ def fetch_hips_cutout_raw(hips_id: str, ra: float, dec: float, fov: float, width
     return None
 
 
-def is_blank_or_out_of_coverage(data: bytes) -> bool:
-    """Check if returned image is an empty/black frame generated when outside survey coverage."""
-    if not data or len(data) < 100:
-        return True
-    # CDS hips2fits returns ~3700 bytes of black frame when outside survey coverage
-    if len(data) < 4500:
-        return True
-    return False
-
-
 @app.get("/api/targets/cutout")
 def get_target_cutout(
     ra: float = Query(..., description="Target Right Ascension in degrees"),
@@ -871,28 +931,36 @@ def get_target_cutout(
     """
     Retrieve or cache a sky cutout image for a target coordinate.
     If survey is 'auto', automatically tries Subaru HSC DR2 wide, and if outside
-    HSC coverage, falls back to Pan-STARRS DR1 (or DSS2).
+    HSC coverage (or dummy blank white image returned), falls back to Pan-STARRS DR1 (or DSS2).
     """
     survey_key = survey.lower().strip()
     cache_prefix = f"cutout_{survey_key}_{ra:.5f}_{dec:+.5f}_{fov:.5f}_{width}x{height}"
     cache_img = os.path.join(CUTOUT_CACHE_DIR, f"{cache_prefix}.jpg")
     cache_meta = os.path.join(CUTOUT_CACHE_DIR, f"{cache_prefix}.json")
 
-    # 1. Check local cache
+    # 1. Check local cache (with blank detection to prevent serving stale white frames)
     if os.path.exists(cache_img) and os.path.exists(cache_meta):
         try:
-            with open(cache_meta, "r", encoding="utf-8") as f:
-                meta = json.load(f)
-            return FileResponse(
-                cache_img,
-                media_type="image/jpeg",
-                headers={
-                    "X-Survey-Used": meta.get("survey_used", survey_key),
-                    "X-Survey-Name": meta.get("survey_name", "Sky Cutout"),
-                    "X-Is-Fallback": str(meta.get("is_fallback", False)).lower(),
-                    "Cache-Control": "public, max-age=86400",
-                },
-            )
+            with open(cache_img, "rb") as f_img:
+                cached_bytes = f_img.read()
+            if not is_blank_or_out_of_coverage(cached_bytes):
+                with open(cache_meta, "r", encoding="utf-8") as f_meta:
+                    meta = json.load(f_meta)
+                return FileResponse(
+                    cache_img,
+                    media_type="image/jpeg",
+                    headers={
+                        "X-Survey-Used": meta.get("survey_used", survey_key),
+                        "X-Survey-Name": meta.get("survey_name", "Sky Cutout"),
+                        "X-Is-Fallback": str(meta.get("is_fallback", False)).lower(),
+                        "Cache-Control": "public, max-age=86400",
+                    },
+                )
+            else:
+                # Stale blank cache detected: delete and re-fetch properly
+                os.remove(cache_img)
+                if os.path.exists(cache_meta):
+                    os.remove(cache_meta)
         except Exception:
             pass
 

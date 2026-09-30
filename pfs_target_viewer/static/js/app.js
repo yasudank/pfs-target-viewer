@@ -80,6 +80,7 @@ const elements = {
   minZInput: document.getElementById("minZInput"),
   maxZInput: document.getElementById("maxZInput"),
   sortBySelect: document.getElementById("sortBySelect"),
+  hasSpectraCheckbox: document.getElementById("hasSpectraCheckbox"),
   pageSizeSelect: document.getElementById("pageSizeSelect"),
   resetFiltersBtn: document.getElementById("resetFiltersBtn"),
 
@@ -272,6 +273,16 @@ function initEventListeners() {
     fetchTargets();
   });
 
+  // With Spectra Only Filter
+  if (elements.hasSpectraCheckbox) {
+    elements.hasSpectraCheckbox.addEventListener("change", (e) => {
+      state.has_png = e.target.checked ? true : null;
+      state.has_fits = e.target.checked ? true : null;
+      state.page = 1;
+      fetchTargets();
+    });
+  }
+
   // Reset Filters
   elements.resetFiltersBtn.addEventListener("click", () => {
     elements.searchInput.value = "";
@@ -281,12 +292,15 @@ function initEventListeners() {
     elements.classPills.querySelector('[data-class="ALL"]').classList.add("active");
     if (elements.catIdSelect) elements.catIdSelect.value = "ALL";
     elements.sortBySelect.value = "redshift";
+    if (elements.hasSpectraCheckbox) elements.hasSpectraCheckbox.checked = false;
 
     state.q = "";
     state.classification = "ALL";
     state.cat_id = null;
     state.min_z = null;
     state.max_z = null;
+    state.has_png = null;
+    state.has_fits = null;
     state.sort_by = "redshift";
     state.order = "desc";
     state.page = 1;

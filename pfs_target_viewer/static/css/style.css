@@ -252,6 +252,31 @@ body {
 .pill-qso.active { background: var(--color-qso); }
 .pill-star.active { background: var(--color-star); }
 
+.spectra-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.65rem;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s;
+}
+
+.spectra-toggle:hover {
+  border-color: var(--accent-blue);
+  color: var(--text-primary);
+}
+
+.spectra-toggle input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: var(--accent-blue);
+}
+
 /* Redshift Range */
 .z-inputs {
   display: flex;

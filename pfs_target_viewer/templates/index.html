@@ -90,6 +90,8 @@
           <select id="sortBySelect" class="custom-select">
             <option value="redshift" data-order="desc">Redshift (High &rarr; Low)</option>
             <option value="redshift" data-order="asc">Redshift (Low &rarr; High)</option>
+            <option value="velocity" data-order="desc">Velocity (High &rarr; Low)</option>
+            <option value="velocity" data-order="asc">Velocity (Low &rarr; High)</option>
             <option value="objId" data-order="asc">Target ID (Asc)</option>
             <option value="catId" data-order="asc">catId (Asc)</option>
             <option value="catId" data-order="desc">catId (Desc)</option>
@@ -98,6 +100,14 @@
             <option value="probaQSO" data-order="desc">P(QSO) (High &rarr; Low)</option>
             <option value="probaStar" data-order="desc">P(Star) (High &rarr; Low)</option>
           </select>
+        </div>
+
+        <!-- Spectra Only Filter -->
+        <div class="filter-group">
+          <label class="spectra-toggle" title="Only show targets that have coadded spectra (FITS / PNG)">
+            <input type="checkbox" id="hasSpectraCheckbox">
+            <span>With Spectra</span>
+          </label>
         </div>
 
         <!-- Reset Button -->

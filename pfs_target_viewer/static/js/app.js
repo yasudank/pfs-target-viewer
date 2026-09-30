@@ -1702,10 +1702,23 @@ function renderPlotlyChart() {
   };
 
   Plotly.react(elements.plotlyChart, traces, layout, config);
+
+  if (!elements.plotlyChart._hasRelayoutListener) {
+    elements.plotlyChart.on("plotly_relayout", (eventData) => {
+      // Ensure shapes and annotations remain anchored and synchronized during user zoom / pan / reset
+      if (eventData && (eventData["xaxis.range[0]"] || eventData["yaxis.range[0]"] || eventData["xaxis.autorange"] || eventData["yaxis.autorange"])) {
+        // yref: "paper" ensures Plotly natively keeps annotations at the top of the viewport
+      }
+    });
+    elements.plotlyChart._hasRelayoutListener = true;
+  }
 }
 
 /**
- * Generate Plotly vertical line shapes and text annotations for spectral lines
+ * Generate Plotly vertical line shapes and text annotations for spectral lines.
+ * Uses yref: "paper" (0 to 1) so lines span the full visible height and text labels
+ * remain permanently pinned at the top of the viewport, regardless of any Y-axis zooming,
+ * scaling, or panning.
  */
 function getSpectralLineShapes(ymin, ymax) {
   const shapes = [];
@@ -1728,12 +1741,15 @@ function getSpectralLineShapes(ymin, ymax) {
     const isEmission = line.type === "emission";
     const color = isEmission ? "#38bdf8" : "#f43f5e";
 
+    // 1. Vertical dashed line spanning full visible viewport
     shapes.push({
       type: "line",
+      xref: "x",
       x0: obsWave,
       x1: obsWave,
-      y0: ymin,
-      y1: ymax,
+      yref: "paper",
+      y0: 0,
+      y1: 1,
       line: {
         color: color,
         width: 1,
@@ -1741,17 +1757,22 @@ function getSpectralLineShapes(ymin, ymax) {
       },
     });
 
-    const yPos = ymax * (0.92 - (stagger % 3) * 0.08);
+    // 2. Line label pinned near the top of the visible viewport
+    const yPaperPos = 0.95 - (stagger % 3) * 0.08;
     stagger++;
 
     annotations.push({
       x: obsWave,
-      y: yPos,
+      xref: "x",
+      y: yPaperPos,
+      yref: "paper",
       text: line.name,
       showarrow: false,
       textangle: -90,
       font: { color: color, size: 9, family: "JetBrains Mono" },
-      bgcolor: "rgba(11, 15, 25, 0.6)",
+      bgcolor: "rgba(11, 15, 25, 0.75)",
+      bordercolor: color,
+      borderwidth: 0.5,
       borderpad: 2,
     });
   });
@@ -1764,8 +1785,7 @@ function getSpectralLineShapes(ymin, ymax) {
  */
 function updateSpectralLineShapes() {
   if (!elements.plotlyChart || !elements.plotlyChart.layout) return;
-  const yrange = elements.plotlyChart.layout.yaxis.range;
-  const { shapes, annotations } = getSpectralLineShapes(yrange[0], yrange[1]);
+  const { shapes, annotations } = getSpectralLineShapes();
 
   Plotly.relayout(elements.plotlyChart, {
     shapes: shapes,

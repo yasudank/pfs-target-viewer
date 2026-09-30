@@ -427,7 +427,7 @@ def get_targets(
     has_png: Optional[bool] = Query(None, description="Filter targets that have PNG spectra"),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     limit: int = Query(25, ge=5, le=100, description="Items per page"),
-    sort_by: str = Query("objId", description="Sort field"),
+    sort_by: str = Query("redshift", description="Sort field"),
     order: str = Query("asc", description="Sort order (asc, desc)"),
 ):
     """Search and paginate targets from target_summary / v_target_summary."""

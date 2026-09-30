@@ -48,7 +48,7 @@ const state = {
   page: 1,
   limit: 25,
   sort_by: "redshift",
-  order: "desc",
+  order: "asc",
   total: 0,
   pages: 1,
   loading: false,
@@ -199,6 +199,11 @@ const elements = {
 // Initialization
 // ----------------------------------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
+  if (elements.sortBySelect && elements.sortBySelect.selectedOptions.length > 0) {
+    const opt = elements.sortBySelect.selectedOptions[0];
+    state.sort_by = opt.value;
+    state.order = opt.dataset.order || "asc";
+  }
   initEventListeners();
   loadStats();
   fetchTargets();
@@ -291,7 +296,12 @@ function initEventListeners() {
     elements.classPills.querySelectorAll(".pill-btn").forEach((b) => b.classList.remove("active"));
     elements.classPills.querySelector('[data-class="ALL"]').classList.add("active");
     if (elements.catIdSelect) elements.catIdSelect.value = "ALL";
-    elements.sortBySelect.value = "redshift";
+    if (elements.sortBySelect) {
+      elements.sortBySelect.selectedIndex = 0;
+      const opt = elements.sortBySelect.selectedOptions[0];
+      state.sort_by = opt ? opt.value : "redshift";
+      state.order = opt ? (opt.dataset.order || "asc") : "asc";
+    }
     if (elements.hasSpectraCheckbox) elements.hasSpectraCheckbox.checked = false;
 
     state.q = "";
@@ -301,8 +311,6 @@ function initEventListeners() {
     state.max_z = null;
     state.has_png = null;
     state.has_fits = null;
-    state.sort_by = "redshift";
-    state.order = "desc";
     state.page = 1;
     fetchTargets();
   });

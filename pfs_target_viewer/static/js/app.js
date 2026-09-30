@@ -59,8 +59,9 @@ const state = {
   activeZ: null,
   bestZ: null,
 
-  // Sky Map Scope & Cache
+  // Sky Map Scope, Cache & Rotation
   skyScope: "all", // "page" or "all"
+  skyCentralRa: 180, // Default central meridian: 180 deg (12h)
   allSkyTargets: null,
   allSkyLoading: false,
   lastFilterKey: null,
@@ -193,6 +194,12 @@ const elements = {
   skyMapZoomOutBtn: document.getElementById("skyMapZoomOutBtn"),
   skyMapResetBtn: document.getElementById("skyMapResetBtn"),
   skyMapToggleBtn: document.getElementById("skyMapToggleBtn"),
+  skyRotationToolbar: document.getElementById("skyRotationToolbar"),
+  skyRa0Slider: document.getElementById("skyRa0Slider"),
+  skyRa0Value: document.getElementById("skyRa0Value"),
+  skyRotStepLeftBtn: document.getElementById("skyRotStepLeftBtn"),
+  skyRotStepRightBtn: document.getElementById("skyRotStepRightBtn"),
+  skyCenterTargetsBtn: document.getElementById("skyCenterTargetsBtn"),
 };
 
 // ----------------------------------------------------------------------------
@@ -311,6 +318,8 @@ function initEventListeners() {
     state.max_z = null;
     state.has_png = null;
     state.has_fits = null;
+    state.skyCentralRa = 180;
+    updateSkyRotationUI(180);
     state.page = 1;
     fetchTargets();
   });
@@ -459,7 +468,7 @@ function initEventListeners() {
     }
   });
 
-  // Sky Map Controls
+  // Sky Map Controls & Rotation
   if (elements.skyMapResetBtn) {
     elements.skyMapResetBtn.addEventListener("click", () => {
       if (elements.skyPlotly) {
@@ -470,6 +479,62 @@ function initEventListeners() {
           "yaxis.autorange": false,
         });
       }
+      setSkyCentralRa(180);
+    });
+  }
+
+  // Central RA Rotation Slider
+  if (elements.skyRa0Slider) {
+    let ra0Raf = null;
+    elements.skyRa0Slider.addEventListener("input", (e) => {
+      const val = parseFloat(e.target.value);
+      state.skyCentralRa = val;
+      if (elements.skyRa0Value) {
+        elements.skyRa0Value.textContent = formatRaDegrees(val);
+      }
+      document.querySelectorAll(".preset-ra-btn").forEach((btn) => {
+        const btnRa = parseFloat(btn.dataset.ra0);
+        if (Math.abs(btnRa - val) < 1e-3) {
+          btn.classList.add("active");
+        } else {
+          btn.classList.remove("active");
+        }
+      });
+      if (ra0Raf) cancelAnimationFrame(ra0Raf);
+      ra0Raf = requestAnimationFrame(() => {
+        renderSkyMap(state.targets);
+      });
+    });
+  }
+
+  // Step Rotate Buttons (15 deg = 1 hour steps)
+  if (elements.skyRotStepLeftBtn) {
+    elements.skyRotStepLeftBtn.addEventListener("click", () => {
+      setSkyCentralRa((state.skyCentralRa - 15 + 360) % 360);
+    });
+  }
+
+  if (elements.skyRotStepRightBtn) {
+    elements.skyRotStepRightBtn.addEventListener("click", () => {
+      setSkyCentralRa((state.skyCentralRa + 15) % 360);
+    });
+  }
+
+  // Preset RA Buttons
+  document.querySelectorAll(".preset-ra-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const targetRa = parseFloat(btn.dataset.ra0);
+      setSkyCentralRa(targetRa);
+    });
+  });
+
+  // Center Map on Current Targets (Circular mean of RA)
+  if (elements.skyCenterTargetsBtn) {
+    elements.skyCenterTargetsBtn.addEventListener("click", () => {
+      const isAll = state.skyScope === "all";
+      const targets = isAll ? (state.allSkyTargets || state.targets || []) : (state.targets || []);
+      const meanRa = calculateMeanRa(targets);
+      setSkyCentralRa(meanRa);
     });
   }
 
@@ -512,10 +577,12 @@ function initEventListeners() {
       const isHidden = elements.skyMapBody.style.display === "none";
       if (isHidden) {
         elements.skyMapBody.style.display = "flex";
+        if (elements.skyRotationToolbar) elements.skyRotationToolbar.style.display = "flex";
         elements.skyMapToggleBtn.textContent = "− Collapse";
         Plotly.Plots.resize(elements.skyPlotly);
       } else {
         elements.skyMapBody.style.display = "none";
+        if (elements.skyRotationToolbar) elements.skyRotationToolbar.style.display = "none";
         elements.skyMapToggleBtn.textContent = "+ Expand";
       }
     });
@@ -788,10 +855,58 @@ function degToRaHours(deg) {
   return `${h}h ${m}m ${s}s`;
 }
 
-let _mollweideGraticulesCache = null;
+function formatRaDegrees(deg) {
+  const norm = ((deg % 360) + 360) % 360;
+  const totalHours = norm / 15;
+  const h = Math.floor(totalHours);
+  const m = Math.round((totalHours - h) * 60);
+  const padM = String(m === 60 ? 0 : m).padStart(2, "0");
+  const displayH = m === 60 ? (h + 1) % 24 : h;
+  return `${Math.round(norm)}° (${displayH}h ${padM}m)`;
+}
 
-function getMollweideGraticules() {
-  if (_mollweideGraticulesCache) return _mollweideGraticulesCache;
+function updateSkyRotationUI(ra0) {
+  const norm = ((ra0 % 360) + 360) % 360;
+  if (elements.skyRa0Slider) {
+    elements.skyRa0Slider.value = norm;
+  }
+  if (elements.skyRa0Value) {
+    elements.skyRa0Value.textContent = formatRaDegrees(norm);
+  }
+  document.querySelectorAll(".preset-ra-btn").forEach((btn) => {
+    const btnRa = parseFloat(btn.dataset.ra0);
+    if (Math.abs(btnRa - norm) < 1e-3) {
+      btn.classList.add("active");
+    } else {
+      btn.classList.remove("active");
+    }
+  });
+}
+
+function setSkyCentralRa(newRa0) {
+  state.skyCentralRa = ((newRa0 % 360) + 360) % 360;
+  updateSkyRotationUI(state.skyCentralRa);
+  renderSkyMap(state.targets);
+}
+
+function calculateMeanRa(targets) {
+  const valid = (targets || []).filter((t) => t.ra !== null && t.ra !== undefined && !isNaN(t.ra));
+  if (valid.length === 0) return 180;
+  let sumSin = 0, sumCos = 0;
+  valid.forEach((t) => {
+    const rad = t.ra * (Math.PI / 180);
+    sumSin += Math.sin(rad);
+    sumCos += Math.cos(rad);
+  });
+  const meanRad = Math.atan2(sumSin, sumCos);
+  const meanDeg = (meanRad * (180 / Math.PI) + 360) % 360;
+  return Math.round(meanDeg / 5) * 5;
+}
+
+let _mollweideStaticBoundaryParallels = null;
+
+function getMollweideStaticGraticules() {
+  if (_mollweideStaticBoundaryParallels) return _mollweideStaticBoundaryParallels;
 
   const traces = [];
   const sqrt2 = Math.SQRT2;
@@ -837,24 +952,35 @@ function getMollweideGraticules() {
     });
   });
 
-  // 3. Meridians of Right Ascension (every 30 deg: 30, 60, ..., 330)
-  for (let ra = 0; ra <= 360; ra += 30) {
-    if (ra === 0 || ra === 360) continue;
+  _mollweideStaticBoundaryParallels = traces;
+  return _mollweideStaticBoundaryParallels;
+}
+
+function getMollweideGraticules(ra0Deg = 180) {
+  const traces = [...getMollweideStaticGraticules()];
+
+  // 3. Dynamic Meridians of Right Ascension (every 30 deg: 0, 30, ..., 330)
+  for (let ra = 0; ra < 360; ra += 30) {
+    let dRa = (ra - ra0Deg) % 360;
+    if (dRa > 180) dRa -= 360;
+    if (dRa < -180) dRa += 360;
+    if (Math.abs(Math.abs(dRa) - 180) < 1e-4) continue; // Boundary already plotted
+
     const mX = [], mY = [];
     for (let dec = -90; dec <= 90; dec += 2) {
-      const pt = projectMollweide(ra, dec);
+      const pt = projectMollweide(ra, dec, ra0Deg);
       mX.push(pt.x);
       mY.push(pt.y);
     }
-    const isCentral = (ra === 180);
+    const isCentral = (Math.abs(dRa) < 1e-4);
     traces.push({
       type: "scatter",
       mode: "lines",
       x: mX,
       y: mY,
       line: {
-        color: isCentral ? "rgba(255, 255, 255, 0.3)" : "rgba(255, 255, 255, 0.1)",
-        width: isCentral ? 1.2 : 0.8,
+        color: isCentral ? "rgba(56, 189, 248, 0.45)" : "rgba(255, 255, 255, 0.1)",
+        width: isCentral ? 1.4 : 0.8,
         dash: isCentral ? "solid" : "dot",
       },
       hoverinfo: "none",
@@ -862,24 +988,12 @@ function getMollweideGraticules() {
     });
   }
 
-  _mollweideGraticulesCache = traces;
-  return _mollweideGraticulesCache;
+  return traces;
 }
 
-function getMollweideAnnotations() {
-  return [
-    // RA labels along Equator (y = -0.16)
-    { x: 2.83, y: -0.16, text: "24h (360°)", showarrow: false, font: { color: "#64748b", size: 9 }, yanchor: "top" },
-    { x: 2.12, y: -0.16, text: "21h", showarrow: false, font: { color: "#64748b", size: 9 }, yanchor: "top" },
-    { x: 1.41, y: -0.16, text: "18h", showarrow: false, font: { color: "#64748b", size: 9 }, yanchor: "top" },
-    { x: 0.71, y: -0.16, text: "15h", showarrow: false, font: { color: "#64748b", size: 9 }, yanchor: "top" },
-    { x: 0,    y: -0.16, text: "12h (180°)", showarrow: false, font: { color: "#94a3b8", size: 10, weight: 600 }, yanchor: "top" },
-    { x: -0.71, y: -0.16, text: "9h", showarrow: false, font: { color: "#64748b", size: 9 }, yanchor: "top" },
-    { x: -1.41, y: -0.16, text: "6h", showarrow: false, font: { color: "#64748b", size: 9 }, yanchor: "top" },
-    { x: -2.12, y: -0.16, text: "3h", showarrow: false, font: { color: "#64748b", size: 9 }, yanchor: "top" },
-    { x: -2.83, y: -0.16, text: "0h (0°)", showarrow: false, font: { color: "#64748b", size: 9 }, yanchor: "top" },
-
-    // Dec labels along prime meridian
+function getMollweideAnnotations(ra0Deg = 180) {
+  const annotations = [
+    // Dec labels along central meridian
     { x: 0, y: 1.25, text: "+60°", showarrow: false, font: { color: "#64748b", size: 9 }, bgcolor: "rgba(11, 17, 32, 0.75)" },
     { x: 0, y: 0.73, text: "+30°", showarrow: false, font: { color: "#64748b", size: 9 }, bgcolor: "rgba(11, 17, 32, 0.75)" },
     { x: 0, y: -0.73, text: "-30°", showarrow: false, font: { color: "#64748b", size: 9 }, bgcolor: "rgba(11, 17, 32, 0.75)" },
@@ -893,6 +1007,36 @@ function getMollweideAnnotations() {
     { x: 2.83, y: 1.25, text: "East (RA &rarr;)", showarrow: false, font: { color: "#38bdf8", size: 10 } },
     { x: -2.83, y: 1.25, text: "(&larr; RA) West", showarrow: false, font: { color: "#38bdf8", size: 10 } },
   ];
+
+  // Dynamic RA labels along Equator (every 30 deg = 2h)
+  for (let ra = 0; ra < 360; ra += 30) {
+    let dRa = (ra - ra0Deg) % 360;
+    if (dRa > 180) dRa -= 360;
+    if (dRa < -180) dRa += 360;
+
+    const pt = projectMollweide(ra, 0, ra0Deg);
+    const xVal = pt.x;
+    if (Math.abs(xVal) > 2.72) continue; // Skip edge boundary overlap
+
+    const isCentral = (Math.abs(dRa) < 1e-4);
+    const raH = ra / 15;
+    const labelText = isCentral ? `${raH}h (${ra}°)` : `${raH}h`;
+
+    annotations.push({
+      x: parseFloat(xVal.toFixed(3)),
+      y: -0.16,
+      text: labelText,
+      showarrow: false,
+      font: {
+        color: isCentral ? "#38bdf8" : "#64748b",
+        size: isCentral ? 10 : 9,
+        weight: isCentral ? 700 : 400,
+      },
+      yanchor: "top",
+    });
+  }
+
+  return annotations;
 }
 
 function renderSkyMap(pageTargets) {
@@ -925,12 +1069,12 @@ function renderSkyMap(pageTargets) {
     elements.skyMapCount.textContent = "0 targets";
     Plotly.react(
       elements.skyPlotly,
-      getMollweideGraticules(),
+      getMollweideGraticules(state.skyCentralRa),
       {
         plot_bgcolor: "#0b1120",
         paper_bgcolor: "#111827",
         annotations: [
-          ...getMollweideAnnotations(),
+          ...getMollweideAnnotations(state.skyCentralRa),
           {
             text: "No targets to display on sky map",
             xref: "paper",
@@ -961,12 +1105,12 @@ function renderSkyMap(pageTargets) {
   if (validTargets.length === 0) {
     Plotly.react(
       elements.skyPlotly,
-      getMollweideGraticules(),
+      getMollweideGraticules(state.skyCentralRa),
       {
         plot_bgcolor: "#0b1120",
         paper_bgcolor: "#111827",
         annotations: [
-          ...getMollweideAnnotations(),
+          ...getMollweideAnnotations(state.skyCentralRa),
           {
             text: "No celestial coordinates (RA/Dec) recorded for current targets",
             xref: "paper",
@@ -1004,7 +1148,7 @@ function renderSkyMap(pageTargets) {
       zText = `Redshift: z = ${t.bestRedshift.toFixed(4)}`;
     }
 
-    const pt = projectMollweide(t.ra, t.dec);
+    const pt = projectMollweide(t.ra, t.dec, state.skyCentralRa);
     const raH = degToRaHours(t.ra);
 
     grp.x.push(pt.x);
@@ -1013,7 +1157,7 @@ function renderSkyMap(pageTargets) {
   });
 
   // Base graticules and boundary
-  const traces = [...getMollweideGraticules()];
+  const traces = [...getMollweideGraticules(state.skyCentralRa)];
   const plotType = isAll ? "scattergl" : "scatter";
 
   ["GALAXY", "QSO", "STAR", "UNKNOWN"].forEach((key) => {
@@ -1051,7 +1195,7 @@ function renderSkyMap(pageTargets) {
              t.dec !== null && t.dec !== undefined && !isNaN(t.dec)
     );
     if (pageValid.length > 0) {
-      const pagePts = pageValid.map((t) => projectMollweide(t.ra, t.dec));
+      const pagePts = pageValid.map((t) => projectMollweide(t.ra, t.dec, state.skyCentralRa));
       traces.push({
         type: "scatter",
         mode: "markers",
@@ -1101,7 +1245,7 @@ function renderSkyMap(pageTargets) {
       bordercolor: "rgba(255, 255, 255, 0.1)",
       borderwidth: 1,
     },
-    annotations: getMollweideAnnotations(),
+    annotations: getMollweideAnnotations(state.skyCentralRa),
     xaxis: {
       range: [3.25, -3.25], // Astronomical standard: RA increases to the left
       showgrid: false,

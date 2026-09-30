@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PFS Target & Spectrum Viewer</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=1.8">
+  <link rel="stylesheet" href="/static/css/style.css?v=1.9">
   <style>
     th, .targets-table th, .detail-subtable th, .meta-label {
       text-transform: none !important;
@@ -166,6 +166,31 @@
           </div>
         </div>
       </div>
+
+      <!-- Sky Map Central RA (Rotation) Controls -->
+      <div class="sky-rotation-toolbar" id="skyRotationToolbar">
+        <div class="rotation-ctrl-group">
+          <span class="rotation-title" title="Rotate the celestial globe horizontally along Right Ascension">
+            🌐 Center RA:
+          </span>
+          <button type="button" class="btn btn-xs btn-secondary" id="skyRotStepLeftBtn" title="Rotate East / Left (-15° = -1h)">⮜ -1h</button>
+          <div class="rotation-slider-container">
+            <input type="range" id="skyRa0Slider" min="0" max="360" step="5" value="180" class="rotation-slider" title="Drag to rotate celestial sphere">
+            <span id="skyRa0Value" class="rotation-badge">180° (12h 00m)</span>
+          </div>
+          <button type="button" class="btn btn-xs btn-secondary" id="skyRotStepRightBtn" title="Rotate West / Right (+15° = +1h)">+1h ⮞</button>
+        </div>
+
+        <div class="rotation-preset-group">
+          <span class="preset-label">Presets:</span>
+          <button type="button" class="btn btn-xs btn-outline preset-ra-btn active" data-ra0="180">180° (12h)</button>
+          <button type="button" class="btn btn-xs btn-outline preset-ra-btn" data-ra0="0">0° (0h)</button>
+          <button type="button" class="btn btn-xs btn-outline preset-ra-btn" data-ra0="90">90° (6h)</button>
+          <button type="button" class="btn btn-xs btn-outline preset-ra-btn" data-ra0="270">270° (18h)</button>
+          <button type="button" class="btn btn-xs btn-outline" id="skyCenterTargetsBtn" title="Center map on average RA of filtered targets">🎯 Center on Data</button>
+        </div>
+      </div>
+
       <div class="sky-map-body" id="skyMapBody">
         <div id="skyPlotly" class="sky-plotly-container"></div>
       </div>
@@ -568,6 +593,6 @@
   </div>
 
   <!-- Client-side script -->
-  <script src="/static/js/app.js?v=1.8"></script>
+  <script src="/static/js/app.js?v=1.9"></script>
 </body>
 </html>

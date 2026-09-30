@@ -63,9 +63,10 @@ const state = {
   skyScope: "all", // "page" or "all"
   skyCentralRa: 180, // Default central meridian: 180 deg (12h)
   spatialFilter: null, // { min_ra, max_ra, min_dec, max_dec } or null
-  allSkyTargets: null,
+  baseAllSkyTargets: null, // Master full-sky coordinate list for current attribute filters
+  allSkyTargets: null, // Currently plotted coordinates (subset or base)
   allSkyLoading: false,
-  lastFilterKey: null,
+  lastBaseFilterKey: null,
   targets: [],
 
   // Image Preview Navigation
@@ -604,8 +605,17 @@ function initEventListeners() {
     elements.skyScopeAllBtn.addEventListener("click", () => {
       if (state.skyScope !== "all") {
         state.skyScope = "all";
-        if (!state.allSkyTargets && !state.allSkyLoading) {
-          fetchAllSkyPositions();
+        if (!state.allSkyTargets) {
+          if (state.baseAllSkyTargets) {
+            if (state.spatialFilter) {
+              state.allSkyTargets = state.baseAllSkyTargets.filter((t) => isTargetInSpatialFilter(t, state.spatialFilter));
+            } else {
+              state.allSkyTargets = state.baseAllSkyTargets;
+            }
+            renderSkyMap(state.targets);
+          } else if (!state.allSkyLoading) {
+            fetchAllSkyPositions();
+          }
         } else {
           renderSkyMap(state.targets);
         }
@@ -663,12 +673,10 @@ async function fetchTargets() {
   state.loading = true;
   elements.loadingOverlay.classList.add("active");
 
-  const sfKey = state.spatialFilter
-    ? `${state.spatialFilter.min_ra}_${state.spatialFilter.max_ra}_${state.spatialFilter.min_dec}_${state.spatialFilter.max_dec}`
-    : "";
-  const filterKey = `${state.q || ""}|${state.classification || ""}|${state.cat_id || ""}|${state.min_z || ""}|${state.max_z || ""}|${state.has_png || ""}|${state.has_fits || ""}|${sfKey}`;
-  if (state.lastFilterKey !== filterKey) {
-    state.lastFilterKey = filterKey;
+  const baseFilterKey = `${state.q || ""}|${state.classification || ""}|${state.cat_id || ""}|${state.min_z || ""}|${state.max_z || ""}|${state.has_png || ""}|${state.has_fits || ""}`;
+  if (state.lastBaseFilterKey !== baseFilterKey) {
+    state.lastBaseFilterKey = baseFilterKey;
+    state.baseAllSkyTargets = null;
     state.allSkyTargets = null;
   }
 
@@ -838,6 +846,30 @@ function updatePaginationUI() {
   }
 }
 
+function isTargetInSpatialFilter(t, filter) {
+  if (!filter) return true;
+  if (t.ra === null || t.ra === undefined || isNaN(t.ra) ||
+      t.dec === null || t.dec === undefined || isNaN(t.dec)) {
+    return false;
+  }
+  if (filter.min_dec !== null && filter.min_dec !== undefined && t.dec < filter.min_dec) {
+    return false;
+  }
+  if (filter.max_dec !== null && filter.max_dec !== undefined && t.dec > filter.max_dec) {
+    return false;
+  }
+  if (filter.min_ra !== null && filter.min_ra !== undefined &&
+      filter.max_ra !== null && filter.max_ra !== undefined) {
+    if (filter.min_ra <= filter.max_ra) {
+      if (t.ra < filter.min_ra || t.ra > filter.max_ra) return false;
+    } else {
+      // Wraps around RA 0 deg (e.g. min_ra = 350, max_ra = 20)
+      if (t.ra < filter.min_ra && t.ra > filter.max_ra) return false;
+    }
+  }
+  return true;
+}
+
 // ----------------------------------------------------------------------------
 // Sky Map (Celestial Coordinates RA / Dec)
 // ----------------------------------------------------------------------------
@@ -849,6 +881,7 @@ async function fetchAllSkyPositions() {
     elements.skyMapCount.innerHTML = `<span style="display:inline-block;width:12px;height:12px;border:2px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:4px;"></span> Loading all ${(state.total || 0).toLocaleString()} coordinates...`;
   }
 
+  // Request all celestial coordinates matching current base attribute filters
   const params = new URLSearchParams({ limit: 250000 });
   if (state.q) params.append("q", state.q);
   if (state.classification && state.classification !== "ALL") {
@@ -862,26 +895,16 @@ async function fetchAllSkyPositions() {
   if (state.has_fits !== null && state.has_fits !== undefined) params.append("has_fits", state.has_fits);
   if (state.has_png !== null && state.has_png !== undefined) params.append("has_png", state.has_png);
 
-  if (state.spatialFilter) {
-    if (state.spatialFilter.min_ra !== null && state.spatialFilter.min_ra !== undefined) {
-      params.append("min_ra", state.spatialFilter.min_ra);
-    }
-    if (state.spatialFilter.max_ra !== null && state.spatialFilter.max_ra !== undefined) {
-      params.append("max_ra", state.spatialFilter.max_ra);
-    }
-    if (state.spatialFilter.min_dec !== null && state.spatialFilter.min_dec !== undefined) {
-      params.append("min_dec", state.spatialFilter.min_dec);
-    }
-    if (state.spatialFilter.max_dec !== null && state.spatialFilter.max_dec !== undefined) {
-      params.append("max_dec", state.spatialFilter.max_dec);
-    }
-  }
-
   try {
     const res = await fetch(`/api/targets/sky_positions?${params.toString()}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    state.allSkyTargets = data.targets || [];
+    state.baseAllSkyTargets = data.targets || [];
+    if (state.spatialFilter) {
+      state.allSkyTargets = state.baseAllSkyTargets.filter((t) => isTargetInSpatialFilter(t, state.spatialFilter));
+    } else {
+      state.allSkyTargets = state.baseAllSkyTargets;
+    }
     renderSkyMap(state.targets);
   } catch (err) {
     console.error("Failed to load all sky positions:", err);
@@ -1130,10 +1153,14 @@ function applySpatialFilter(bounds) {
   state.spatialFilter = bounds;
   updateSpatialFilterUI();
   state.page = 1;
-  state.allSkyTargets = null;
   fetchTargets();
   if (state.skyScope === "all") {
-    fetchAllSkyPositions();
+    if (state.baseAllSkyTargets) {
+      state.allSkyTargets = state.baseAllSkyTargets.filter((t) => isTargetInSpatialFilter(t, bounds));
+      renderSkyMap(state.targets);
+    } else {
+      fetchAllSkyPositions();
+    }
   }
 }
 
@@ -1141,10 +1168,14 @@ function clearSpatialFilter() {
   state.spatialFilter = null;
   updateSpatialFilterUI();
   state.page = 1;
-  state.allSkyTargets = null;
   fetchTargets();
   if (state.skyScope === "all") {
-    fetchAllSkyPositions();
+    if (state.baseAllSkyTargets) {
+      state.allSkyTargets = state.baseAllSkyTargets;
+      renderSkyMap(state.targets);
+    } else {
+      fetchAllSkyPositions();
+    }
   }
 }
 
@@ -1357,12 +1388,20 @@ function renderSkyMap(pageTargets) {
 
   const isAll = state.skyScope === "all";
 
-  // If "all" mode is selected but data not loaded yet, fetch it
+  // If "all" mode is selected but data not loaded yet, check base cache or fetch it
   if (isAll && !state.allSkyTargets) {
-    if (!state.allSkyLoading) {
-      fetchAllSkyPositions();
+    if (state.baseAllSkyTargets) {
+      if (state.spatialFilter) {
+        state.allSkyTargets = state.baseAllSkyTargets.filter((t) => isTargetInSpatialFilter(t, state.spatialFilter));
+      } else {
+        state.allSkyTargets = state.baseAllSkyTargets;
+      }
+    } else {
+      if (!state.allSkyLoading) {
+        fetchAllSkyPositions();
+      }
+      return;
     }
-    return;
   }
 
   const targetsToPlot = isAll ? (state.allSkyTargets || []) : (pageTargets || []);

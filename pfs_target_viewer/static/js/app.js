@@ -456,8 +456,10 @@ function initEventListeners() {
     elements.skyMapResetBtn.addEventListener("click", () => {
       if (elements.skyPlotly) {
         Plotly.relayout(elements.skyPlotly, {
-          "xaxis.autorange": "reversed",
-          "yaxis.autorange": true,
+          "xaxis.range": [3.15, -3.15],
+          "yaxis.range": [-3.15, 3.15],
+          "xaxis.autorange": false,
+          "yaxis.autorange": false,
         });
       }
     });
@@ -501,7 +503,7 @@ function initEventListeners() {
     elements.skyMapToggleBtn.addEventListener("click", () => {
       const isHidden = elements.skyMapBody.style.display === "none";
       if (isHidden) {
-        elements.skyMapBody.style.display = "block";
+        elements.skyMapBody.style.display = "flex";
         elements.skyMapToggleBtn.textContent = "− Collapse";
         Plotly.Plots.resize(elements.skyPlotly);
       } else {
@@ -740,6 +742,151 @@ async function fetchAllSkyPositions() {
   }
 }
 
+// ----------------------------------------------------------------------------
+// Mollweide Celestial Projection Math & Graticules
+// ----------------------------------------------------------------------------
+function solveMollweideTheta(phi) {
+  if (Math.abs(phi) >= Math.PI / 2 - 1e-7) return Math.sign(phi) * (Math.PI / 2);
+  if (Math.abs(phi) < 1e-7) return 0;
+  const piSinPhi = Math.PI * Math.sin(phi);
+  let theta = phi;
+  for (let iter = 0; iter < 10; iter++) {
+    const delta = (2 * theta + Math.sin(2 * theta) - piSinPhi) / (2 + 2 * Math.cos(2 * theta));
+    theta -= delta;
+    if (Math.abs(delta) < 1e-6) break;
+  }
+  return theta;
+}
+
+function projectMollweide(raDeg, decDeg, ra0Deg = 180) {
+  let deltaLambda = (raDeg - ra0Deg) * (Math.PI / 180);
+  while (deltaLambda > Math.PI) deltaLambda -= 2 * Math.PI;
+  while (deltaLambda < -Math.PI) deltaLambda += 2 * Math.PI;
+
+  const phi = decDeg * (Math.PI / 180);
+  const theta = solveMollweideTheta(phi);
+  const sqrt2 = Math.SQRT2;
+  const x = (2 * sqrt2 / Math.PI) * deltaLambda * Math.cos(theta);
+  const y = sqrt2 * Math.sin(theta);
+  return { x, y };
+}
+
+function degToRaHours(deg) {
+  const norm = ((deg % 360) + 360) % 360;
+  const totalHours = norm / 15;
+  const h = Math.floor(totalHours);
+  const m = Math.floor((totalHours - h) * 60);
+  const s = (((totalHours - h) * 60 - m) * 60).toFixed(1);
+  return `${h}h ${m}m ${s}s`;
+}
+
+let _mollweideGraticulesCache = null;
+
+function getMollweideGraticules() {
+  if (_mollweideGraticulesCache) return _mollweideGraticulesCache;
+
+  const traces = [];
+  const sqrt2 = Math.SQRT2;
+
+  // 1. Outer Ellipse Boundary
+  const bX = [], bY = [];
+  const nSteps = 180;
+  for (let i = 0; i <= nSteps; i++) {
+    const t = (i / nSteps) * 2 * Math.PI;
+    bX.push(2 * sqrt2 * Math.cos(t));
+    bY.push(sqrt2 * Math.sin(t));
+  }
+  traces.push({
+    type: "scatter",
+    mode: "lines",
+    x: bX,
+    y: bY,
+    line: { color: "rgba(56, 189, 248, 0.5)", width: 1.6 },
+    hoverinfo: "none",
+    showlegend: false,
+    name: "Boundary",
+  });
+
+  // 2. Parallels of Declination (-60, -30, 0, +30, +60)
+  const decs = [-60, -30, 0, 30, 60];
+  decs.forEach((dec) => {
+    const phi = dec * (Math.PI / 180);
+    const theta = solveMollweideTheta(phi);
+    const yVal = sqrt2 * Math.sin(theta);
+    const xMax = 2 * sqrt2 * Math.cos(theta);
+    traces.push({
+      type: "scatter",
+      mode: "lines",
+      x: [-xMax, xMax],
+      y: [yVal, yVal],
+      line: {
+        color: dec === 0 ? "rgba(255, 255, 255, 0.3)" : "rgba(255, 255, 255, 0.12)",
+        width: dec === 0 ? 1.2 : 0.8,
+        dash: dec === 0 ? "solid" : "dot",
+      },
+      hoverinfo: "none",
+      showlegend: false,
+    });
+  });
+
+  // 3. Meridians of Right Ascension (every 30 deg: 30, 60, ..., 330)
+  for (let ra = 0; ra <= 360; ra += 30) {
+    if (ra === 0 || ra === 360) continue;
+    const mX = [], mY = [];
+    for (let dec = -90; dec <= 90; dec += 2) {
+      const pt = projectMollweide(ra, dec);
+      mX.push(pt.x);
+      mY.push(pt.y);
+    }
+    const isCentral = (ra === 180);
+    traces.push({
+      type: "scatter",
+      mode: "lines",
+      x: mX,
+      y: mY,
+      line: {
+        color: isCentral ? "rgba(255, 255, 255, 0.3)" : "rgba(255, 255, 255, 0.1)",
+        width: isCentral ? 1.2 : 0.8,
+        dash: isCentral ? "solid" : "dot",
+      },
+      hoverinfo: "none",
+      showlegend: false,
+    });
+  }
+
+  _mollweideGraticulesCache = traces;
+  return _mollweideGraticulesCache;
+}
+
+function getMollweideAnnotations() {
+  return [
+    // RA labels along Equator (y = -0.16)
+    { x: 2.83, y: -0.16, text: "24h (360°)", showarrow: false, font: { color: "#64748b", size: 9 }, yanchor: "top" },
+    { x: 2.12, y: -0.16, text: "21h", showarrow: false, font: { color: "#64748b", size: 9 }, yanchor: "top" },
+    { x: 1.41, y: -0.16, text: "18h", showarrow: false, font: { color: "#64748b", size: 9 }, yanchor: "top" },
+    { x: 0.71, y: -0.16, text: "15h", showarrow: false, font: { color: "#64748b", size: 9 }, yanchor: "top" },
+    { x: 0,    y: -0.16, text: "12h (180°)", showarrow: false, font: { color: "#94a3b8", size: 10, weight: 600 }, yanchor: "top" },
+    { x: -0.71, y: -0.16, text: "9h", showarrow: false, font: { color: "#64748b", size: 9 }, yanchor: "top" },
+    { x: -1.41, y: -0.16, text: "6h", showarrow: false, font: { color: "#64748b", size: 9 }, yanchor: "top" },
+    { x: -2.12, y: -0.16, text: "3h", showarrow: false, font: { color: "#64748b", size: 9 }, yanchor: "top" },
+    { x: -2.83, y: -0.16, text: "0h (0°)", showarrow: false, font: { color: "#64748b", size: 9 }, yanchor: "top" },
+
+    // Dec labels along prime meridian
+    { x: 0, y: 1.25, text: "+60°", showarrow: false, font: { color: "#64748b", size: 9 }, bgcolor: "rgba(11, 17, 32, 0.75)" },
+    { x: 0, y: 0.73, text: "+30°", showarrow: false, font: { color: "#64748b", size: 9 }, bgcolor: "rgba(11, 17, 32, 0.75)" },
+    { x: 0, y: -0.73, text: "-30°", showarrow: false, font: { color: "#64748b", size: 9 }, bgcolor: "rgba(11, 17, 32, 0.75)" },
+    { x: 0, y: -1.25, text: "-60°", showarrow: false, font: { color: "#64748b", size: 9 }, bgcolor: "rgba(11, 17, 32, 0.75)" },
+
+    // Celestial Poles
+    { x: 0, y: 1.54, text: "NCP (+90°)", showarrow: false, font: { color: "#38bdf8", size: 10, weight: 600 } },
+    { x: 0, y: -1.54, text: "SCP (-90°)", showarrow: false, font: { color: "#38bdf8", size: 10, weight: 600 } },
+
+    // Celestial East / West labels (Astronomical standard: East is left)
+    { x: 2.83, y: 1.25, text: "East (RA &rarr;)", showarrow: false, font: { color: "#38bdf8", size: 10 } },
+    { x: -2.83, y: 1.25, text: "(&larr; RA) West", showarrow: false, font: { color: "#38bdf8", size: 10 } },
+  ];
+}
+
 function renderSkyMap(pageTargets) {
   if (!elements.skyPlotly) return;
 
@@ -770,11 +917,12 @@ function renderSkyMap(pageTargets) {
     elements.skyMapCount.textContent = "0 targets";
     Plotly.react(
       elements.skyPlotly,
-      [],
+      getMollweideGraticules(),
       {
         plot_bgcolor: "#0b1120",
         paper_bgcolor: "#111827",
         annotations: [
+          ...getMollweideAnnotations(),
           {
             text: "No targets to display on sky map",
             xref: "paper",
@@ -785,9 +933,9 @@ function renderSkyMap(pageTargets) {
             font: { color: "#9ca3af", size: 14 },
           },
         ],
-        xaxis: { visible: false },
-        yaxis: { visible: false },
-        margin: { l: 20, r: 20, t: 20, b: 20 },
+        xaxis: { range: [3.15, -3.15], scaleanchor: "y", scaleratio: 1, visible: false },
+        yaxis: { range: [-3.15, 3.15], scaleanchor: "x", scaleratio: 1, visible: false },
+        margin: { l: 20, r: 20, t: 30, b: 20 },
       },
       { responsive: true, displayModeBar: false }
     );
@@ -805,11 +953,12 @@ function renderSkyMap(pageTargets) {
   if (validTargets.length === 0) {
     Plotly.react(
       elements.skyPlotly,
-      [],
+      getMollweideGraticules(),
       {
         plot_bgcolor: "#0b1120",
         paper_bgcolor: "#111827",
         annotations: [
+          ...getMollweideAnnotations(),
           {
             text: "No celestial coordinates (RA/Dec) recorded for current targets",
             xref: "paper",
@@ -820,9 +969,9 @@ function renderSkyMap(pageTargets) {
             font: { color: "#9ca3af", size: 14 },
           },
         ],
-        xaxis: { visible: false },
-        yaxis: { visible: false },
-        margin: { l: 20, r: 20, t: 20, b: 20 },
+        xaxis: { range: [3.15, -3.15], scaleanchor: "y", scaleratio: 1, visible: false },
+        yaxis: { range: [-3.15, 3.15], scaleanchor: "x", scaleratio: 1, visible: false },
+        margin: { l: 20, r: 20, t: 30, b: 20 },
       },
       { responsive: true, displayModeBar: false }
     );
@@ -847,12 +996,16 @@ function renderSkyMap(pageTargets) {
       zText = `Redshift: z = ${t.bestRedshift.toFixed(4)}`;
     }
 
-    grp.x.push(t.ra);
-    grp.y.push(t.dec);
-    grp.customdata.push([t.catId, t.objId, t.obCode || "Target", cls, zText]);
+    const pt = projectMollweide(t.ra, t.dec);
+    const raH = degToRaHours(t.ra);
+
+    grp.x.push(pt.x);
+    grp.y.push(pt.y);
+    grp.customdata.push([t.catId, t.objId, t.obCode || "Target", cls, zText, t.ra, t.dec, raH]);
   });
 
-  const traces = [];
+  // Base graticules and boundary
+  const traces = [...getMollweideGraticules()];
   const plotType = isAll ? "scattergl" : "scatter";
 
   ["GALAXY", "QSO", "STAR", "UNKNOWN"].forEach((key) => {
@@ -868,14 +1021,14 @@ function renderSkyMap(pageTargets) {
         marker: {
           color: g.color,
           symbol: g.symbol,
-          size: isAll ? (key === "STAR" ? 7 : 5) : (key === "STAR" ? 11 : 9),
+          size: isAll ? (key === "STAR" ? 6 : 4.5) : (key === "STAR" ? 11 : 9),
           opacity: isAll ? 0.75 : 0.9,
           line: isAll ? undefined : { color: "#0f172a", width: 1.5 },
         },
         hovertemplate:
           "<b>%{customdata[2]}</b> (objId: %{customdata[1]})<br>" +
           "catId: %{customdata[0]} &bull; %{customdata[3]}<br>" +
-          "RA: %{x:.4f}&deg; | Dec: %{y:.4f}&deg;<br>" +
+          "RA: %{customdata[5]:.4f}&deg; (%{customdata[7]}) | Dec: %{customdata[6]:.4f}&deg;<br>" +
           "%{customdata[4]}<br>" +
           "<span style='color:#38bdf8;font-size:11px;'>👆 Click marker to preview spectrum</span>" +
           "<extra></extra>",
@@ -890,13 +1043,23 @@ function renderSkyMap(pageTargets) {
              t.dec !== null && t.dec !== undefined && !isNaN(t.dec)
     );
     if (pageValid.length > 0) {
+      const pagePts = pageValid.map((t) => projectMollweide(t.ra, t.dec));
       traces.push({
         type: "scatter",
         mode: "markers",
         name: `Current Page Focus (${pageValid.length})`,
-        x: pageValid.map((t) => t.ra),
-        y: pageValid.map((t) => t.dec),
-        customdata: pageValid.map((t) => [t.catId, t.objId, t.obCode || "Target", t.classificationName || "UNKNOWN"]),
+        x: pagePts.map((p) => p.x),
+        y: pagePts.map((p) => p.y),
+        customdata: pageValid.map((t) => [
+          t.catId,
+          t.objId,
+          t.obCode || "Target",
+          t.classificationName || "UNKNOWN",
+          "",
+          t.ra,
+          t.dec,
+          degToRaHours(t.ra),
+        ]),
         marker: {
           color: "rgba(255, 255, 255, 0.15)",
           symbol: "circle",
@@ -906,7 +1069,7 @@ function renderSkyMap(pageTargets) {
         hovertemplate:
           "<b>Page " + state.page + " Focus</b>: %{customdata[2]} (objId: %{customdata[1]})<br>" +
           "catId: %{customdata[0]} &bull; %{customdata[3]}<br>" +
-          "RA: %{x:.4f}&deg; | Dec: %{y:.4f}&deg;<br>" +
+          "RA: %{customdata[5]:.4f}&deg; (%{customdata[7]}) | Dec: %{customdata[6]:.4f}&deg;<br>" +
           "<span style='color:#38bdf8;font-size:11px;'>👆 Click marker to preview spectrum</span>" +
           "<extra></extra>",
       });
@@ -916,31 +1079,38 @@ function renderSkyMap(pageTargets) {
   const layout = {
     paper_bgcolor: "#111827",
     plot_bgcolor: "#0b1120",
-    margin: { l: 65, r: 25, t: 20, b: 50 },
+    margin: { l: 20, r: 20, t: 30, b: 20 },
     hovermode: "closest",
     dragmode: "pan",
     showlegend: true,
     legend: {
       orientation: "h",
-      x: 0.01,
-      y: 1.15,
+      x: 0.5,
+      y: 1.08,
+      xanchor: "center",
       font: { color: "#9ca3af", size: 11 },
-      bgcolor: "rgba(17, 24, 39, 0.75)",
+      bgcolor: "rgba(17, 24, 39, 0.8)",
       bordercolor: "rgba(255, 255, 255, 0.1)",
       borderwidth: 1,
     },
+    annotations: getMollweideAnnotations(),
     xaxis: {
-      title: { text: "Right Ascension (RA) [deg]", font: { color: "#9ca3af", size: 12 } },
-      tickfont: { color: "#9ca3af", size: 11 },
-      gridcolor: "rgba(255, 255, 255, 0.07)",
-      zerolinecolor: "rgba(255, 255, 255, 0.12)",
-      autorange: "reversed", // Astronomical standard: RA increases to the left
+      range: [3.15, -3.15], // Astronomical standard: RA increases to the left
+      scaleanchor: "y",
+      scaleratio: 1,
+      showgrid: false,
+      zeroline: false,
+      showticklabels: false,
+      fixedrange: false,
     },
     yaxis: {
-      title: { text: "Declination (Dec) [deg]", font: { color: "#9ca3af", size: 12 } },
-      tickfont: { color: "#9ca3af", size: 11 },
-      gridcolor: "rgba(255, 255, 255, 0.07)",
-      zerolinecolor: "rgba(255, 255, 255, 0.12)",
+      range: [-3.15, 3.15],
+      scaleanchor: "x",
+      scaleratio: 1,
+      showgrid: false,
+      zeroline: false,
+      showticklabels: false,
+      fixedrange: false,
     },
   };
 

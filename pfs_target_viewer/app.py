@@ -689,10 +689,12 @@ def get_sky_positions(
                 params.append(1 if has_png else 0)
 
         where_sql = "WHERE " + " AND ".join(where_clauses)
+        file_select = ", t.has_fits, t.has_png" if has_file_cols else ""
         sql = f"""
             SELECT 
                 t.catId, t.objId, t.obCode, t.ra, t.dec,
                 t.classificationName, t.bestRedshift, t.bestVelocity
+                {file_select}
             FROM {tbl} t
             {where_sql}
             LIMIT ?
@@ -711,6 +713,8 @@ def get_sky_positions(
                 "classificationName": r["classificationName"] or "UNKNOWN",
                 "bestRedshift": sanitize_val(r["bestRedshift"]),
                 "bestVelocity": sanitize_val(r["bestVelocity"]),
+                "has_fits": bool(r["has_fits"]) if has_file_cols else True,
+                "has_png": bool(r["has_png"]) if has_file_cols else True,
             })
 
         return {

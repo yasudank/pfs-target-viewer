@@ -63,10 +63,9 @@ const state = {
   skyScope: "all", // "page" or "all"
   skyCentralRa: 180, // Default central meridian: 180 deg (12h)
   spatialFilter: null, // { min_ra, max_ra, min_dec, max_dec } or null
-  baseAllSkyTargets: null, // Master full-sky coordinate list for current attribute filters
-  allSkyTargets: null, // Currently plotted coordinates (subset or base)
+  masterSkyTargets: null, // Unconditional master full-sky coordinate list with all attributes (~217k items)
+  allSkyTargets: null, // Plotted coordinates filtered from masterSkyTargets
   allSkyLoading: false,
-  lastBaseFilterKey: null,
   targets: [],
 
   // Image Preview Navigation
@@ -232,6 +231,7 @@ function initEventListeners() {
     searchTimer = setTimeout(() => {
       state.q = e.target.value.trim();
       state.page = 1;
+      updatePlottedSkyTargets();
       fetchTargets();
     }, 300);
   });
@@ -240,6 +240,7 @@ function initEventListeners() {
     elements.searchInput.value = "";
     state.q = "";
     state.page = 1;
+    updatePlottedSkyTargets();
     fetchTargets();
   });
 
@@ -251,6 +252,7 @@ function initEventListeners() {
     btn.classList.add("active");
     state.classification = btn.dataset.class;
     state.page = 1;
+    updatePlottedSkyTargets();
     fetchTargets();
   });
 
@@ -259,6 +261,7 @@ function initEventListeners() {
     elements.catIdSelect.addEventListener("change", (e) => {
       state.cat_id = e.target.value === "ALL" ? null : parseInt(e.target.value, 10);
       state.page = 1;
+      updatePlottedSkyTargets();
       fetchTargets();
     });
   }
@@ -271,6 +274,7 @@ function initEventListeners() {
       state.min_z = elements.minZInput.value ? parseFloat(elements.minZInput.value) : null;
       state.max_z = elements.maxZInput.value ? parseFloat(elements.maxZInput.value) : null;
       state.page = 1;
+      updatePlottedSkyTargets();
       fetchTargets();
     }, 400);
   };
@@ -299,6 +303,7 @@ function initEventListeners() {
       state.has_png = e.target.checked ? true : null;
       state.has_fits = e.target.checked ? true : null;
       state.page = 1;
+      updatePlottedSkyTargets();
       fetchTargets();
     });
   }
@@ -331,6 +336,7 @@ function initEventListeners() {
     state.skyCentralRa = 180;
     updateSkyRotationUI(180);
     state.page = 1;
+    updatePlottedSkyTargets();
     fetchTargets();
   });
 
@@ -605,20 +611,7 @@ function initEventListeners() {
     elements.skyScopeAllBtn.addEventListener("click", () => {
       if (state.skyScope !== "all") {
         state.skyScope = "all";
-        if (!state.allSkyTargets) {
-          if (state.baseAllSkyTargets) {
-            if (state.spatialFilter) {
-              state.allSkyTargets = state.baseAllSkyTargets.filter((t) => isTargetInSpatialFilter(t, state.spatialFilter));
-            } else {
-              state.allSkyTargets = state.baseAllSkyTargets;
-            }
-            renderSkyMap(state.targets);
-          } else if (!state.allSkyLoading) {
-            fetchAllSkyPositions();
-          }
-        } else {
-          renderSkyMap(state.targets);
-        }
+        updatePlottedSkyTargets();
       }
     });
   }
@@ -672,13 +665,6 @@ async function fetchTargets() {
   if (state.loading) return;
   state.loading = true;
   elements.loadingOverlay.classList.add("active");
-
-  const baseFilterKey = `${state.q || ""}|${state.classification || ""}|${state.cat_id || ""}|${state.min_z || ""}|${state.max_z || ""}|${state.has_png || ""}|${state.has_fits || ""}`;
-  if (state.lastBaseFilterKey !== baseFilterKey) {
-    state.lastBaseFilterKey = baseFilterKey;
-    state.baseAllSkyTargets = null;
-    state.allSkyTargets = null;
-  }
 
   const params = new URLSearchParams({
     page: state.page,
@@ -870,41 +856,93 @@ function isTargetInSpatialFilter(t, filter) {
   return true;
 }
 
+function filterMasterSkyTargets() {
+  if (!state.masterSkyTargets) return [];
+
+  const q = state.q ? state.q.trim().toLowerCase() : "";
+  const isQNum = q ? /^\d+$/.test(q) : false;
+  const qNum = isQNum ? parseInt(q, 10) : null;
+  const cls = state.classification;
+  const catId = state.cat_id;
+  const minZ = state.min_z;
+  const maxZ = state.max_z;
+  const hasFits = state.has_fits;
+  const hasPng = state.has_png;
+  const sf = state.spatialFilter;
+
+  return state.masterSkyTargets.filter((t) => {
+    // 1. Classification
+    if (cls && cls !== "ALL") {
+      if ((t.classificationName || "UNKNOWN").toUpperCase() !== cls.toUpperCase()) return false;
+    }
+    // 2. catId
+    if (catId !== null && catId !== undefined && catId !== "ALL") {
+      if (t.catId !== catId) return false;
+    }
+    // 3. Redshift
+    if (minZ !== null && minZ !== undefined) {
+      if (t.bestRedshift === null || t.bestRedshift === undefined || t.bestRedshift < minZ) return false;
+    }
+    if (maxZ !== null && maxZ !== undefined) {
+      if (t.bestRedshift === null || t.bestRedshift === undefined || t.bestRedshift > maxZ) return false;
+    }
+    // 4. File existence
+    if (hasFits === true && !t.has_fits) return false;
+    if (hasPng === true && !t.has_png) return false;
+    // 5. Search query q
+    if (q) {
+      if (isQNum) {
+        const matchId = t.objId == q || t.catId == qNum;
+        const matchCode = t.obCode && t.obCode.toLowerCase().includes(q);
+        if (!matchId && !matchCode) return false;
+      } else {
+        if (!t.obCode || !t.obCode.toLowerCase().includes(q)) return false;
+      }
+    }
+    // 6. Spatial boundary filter (RA / Dec)
+    if (sf) {
+      if (!isTargetInSpatialFilter(t, sf)) return false;
+    }
+    return true;
+  });
+}
+
+function updatePlottedSkyTargets() {
+  if (state.masterSkyTargets) {
+    state.allSkyTargets = filterMasterSkyTargets();
+    if (state.skyScope === "all") {
+      renderSkyMap(state.targets);
+    }
+  } else if (!state.allSkyLoading && state.skyScope === "all") {
+    fetchAllSkyPositions();
+  }
+}
+
 // ----------------------------------------------------------------------------
 // Sky Map (Celestial Coordinates RA / Dec)
 // ----------------------------------------------------------------------------
 async function fetchAllSkyPositions() {
+  if (state.masterSkyTargets) {
+    state.allSkyTargets = filterMasterSkyTargets();
+    renderSkyMap(state.targets);
+    return;
+  }
   if (state.allSkyLoading) return;
   state.allSkyLoading = true;
 
   if (elements.skyMapCount) {
-    elements.skyMapCount.innerHTML = `<span style="display:inline-block;width:12px;height:12px;border:2px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:4px;"></span> Loading all ${(state.total || 0).toLocaleString()} coordinates...`;
+    elements.skyMapCount.innerHTML = `<span style="display:inline-block;width:12px;height:12px;border:2px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:4px;"></span> Loading all celestial coordinates...`;
   }
 
-  // Request all celestial coordinates matching current base attribute filters
+  // Request all celestial coordinates with full attributes once (unconditional)
   const params = new URLSearchParams({ limit: 250000 });
-  if (state.q) params.append("q", state.q);
-  if (state.classification && state.classification !== "ALL") {
-    params.append("classification", state.classification);
-  }
-  if (state.cat_id !== null && state.cat_id !== "ALL") {
-    params.append("cat_id", state.cat_id);
-  }
-  if (state.min_z !== null) params.append("min_z", state.min_z);
-  if (state.max_z !== null) params.append("max_z", state.max_z);
-  if (state.has_fits !== null && state.has_fits !== undefined) params.append("has_fits", state.has_fits);
-  if (state.has_png !== null && state.has_png !== undefined) params.append("has_png", state.has_png);
 
   try {
     const res = await fetch(`/api/targets/sky_positions?${params.toString()}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    state.baseAllSkyTargets = data.targets || [];
-    if (state.spatialFilter) {
-      state.allSkyTargets = state.baseAllSkyTargets.filter((t) => isTargetInSpatialFilter(t, state.spatialFilter));
-    } else {
-      state.allSkyTargets = state.baseAllSkyTargets;
-    }
+    state.masterSkyTargets = data.targets || [];
+    state.allSkyTargets = filterMasterSkyTargets();
     renderSkyMap(state.targets);
   } catch (err) {
     console.error("Failed to load all sky positions:", err);
@@ -1153,30 +1191,16 @@ function applySpatialFilter(bounds) {
   state.spatialFilter = bounds;
   updateSpatialFilterUI();
   state.page = 1;
+  updatePlottedSkyTargets();
   fetchTargets();
-  if (state.skyScope === "all") {
-    if (state.baseAllSkyTargets) {
-      state.allSkyTargets = state.baseAllSkyTargets.filter((t) => isTargetInSpatialFilter(t, bounds));
-      renderSkyMap(state.targets);
-    } else {
-      fetchAllSkyPositions();
-    }
-  }
 }
 
 function clearSpatialFilter() {
   state.spatialFilter = null;
   updateSpatialFilterUI();
   state.page = 1;
+  updatePlottedSkyTargets();
   fetchTargets();
-  if (state.skyScope === "all") {
-    if (state.baseAllSkyTargets) {
-      state.allSkyTargets = state.baseAllSkyTargets;
-      renderSkyMap(state.targets);
-    } else {
-      fetchAllSkyPositions();
-    }
-  }
 }
 
 function degToRaHours(deg) {
@@ -1388,14 +1412,10 @@ function renderSkyMap(pageTargets) {
 
   const isAll = state.skyScope === "all";
 
-  // If "all" mode is selected but data not loaded yet, check base cache or fetch it
+  // If "all" mode is selected but data not loaded yet, check master cache or fetch it
   if (isAll && !state.allSkyTargets) {
-    if (state.baseAllSkyTargets) {
-      if (state.spatialFilter) {
-        state.allSkyTargets = state.baseAllSkyTargets.filter((t) => isTargetInSpatialFilter(t, state.spatialFilter));
-      } else {
-        state.allSkyTargets = state.baseAllSkyTargets;
-      }
+    if (state.masterSkyTargets) {
+      state.allSkyTargets = filterMasterSkyTargets();
     } else {
       if (!state.allSkyLoading) {
         fetchAllSkyPositions();

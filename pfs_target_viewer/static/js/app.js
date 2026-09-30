@@ -60,7 +60,7 @@ const state = {
   bestZ: null,
 
   // Sky Map Scope & Cache
-  skyScope: "page", // "page" or "all"
+  skyScope: "all", // "page" or "all"
   allSkyTargets: null,
   allSkyLoading: false,
   lastFilterKey: null,
@@ -545,7 +545,7 @@ async function fetchTargets() {
   state.loading = true;
   elements.loadingOverlay.classList.add("active");
 
-  const filterKey = `${state.q || ""}|${state.classification || ""}|${state.cat_id || ""}|${state.min_z || ""}|${state.max_z || ""}`;
+  const filterKey = `${state.q || ""}|${state.classification || ""}|${state.cat_id || ""}|${state.min_z || ""}|${state.max_z || ""}|${state.has_png || ""}|${state.has_fits || ""}`;
   if (state.lastFilterKey !== filterKey) {
     state.lastFilterKey = filterKey;
     state.allSkyTargets = null;
@@ -713,7 +713,7 @@ async function fetchAllSkyPositions() {
     elements.skyMapCount.innerHTML = `<span style="display:inline-block;width:12px;height:12px;border:2px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:4px;"></span> Loading all ${(state.total || 0).toLocaleString()} coordinates...`;
   }
 
-  const params = new URLSearchParams({ limit: 50000 });
+  const params = new URLSearchParams({ limit: 250000 });
   if (state.q) params.append("q", state.q);
   if (state.classification && state.classification !== "ALL") {
     params.append("classification", state.classification);
@@ -723,6 +723,8 @@ async function fetchAllSkyPositions() {
   }
   if (state.min_z !== null) params.append("min_z", state.min_z);
   if (state.max_z !== null) params.append("max_z", state.max_z);
+  if (state.has_fits !== null && state.has_fits !== undefined) params.append("has_fits", state.has_fits);
+  if (state.has_png !== null && state.has_png !== undefined) params.append("has_png", state.has_png);
 
   try {
     const res = await fetch(`/api/targets/sky_positions?${params.toString()}`);

@@ -583,7 +583,9 @@ def get_sky_positions(
     max_z: Optional[float] = Query(None, description="Maximum redshift"),
     cat_id: Optional[int] = Query(None, description="Filter by catId"),
     combination: Optional[str] = Query(None, description="Filter by combination"),
-    limit: int = Query(25000, description="Max coordinates to return"),
+    has_fits: Optional[bool] = Query(None, description="Filter targets that have FITS spectra"),
+    has_png: Optional[bool] = Query(None, description="Filter targets that have PNG spectra"),
+    limit: int = Query(250000, description="Max coordinates to return"),
 ):
     """Retrieve lightweight celestial coordinates for all filtered targets (for full sky map display)."""
     where_clauses = ["t.ra IS NOT NULL", "t.dec IS NOT NULL"]
@@ -618,19 +620,27 @@ def get_sky_positions(
         where_clauses.append("t.combination = ?")
         params.append(combination)
 
-    where_sql = "WHERE " + " AND ".join(where_clauses)
-
     conn = get_db()
     cur = conn.cursor()
     try:
         tbl = get_summary_table(conn)
+        has_file_cols = check_db_file_columns(conn)
+
+        if has_file_cols:
+            if has_fits is not None:
+                where_clauses.append("t.has_fits = ?")
+                params.append(1 if has_fits else 0)
+            if has_png is not None:
+                where_clauses.append("t.has_png = ?")
+                params.append(1 if has_png else 0)
+
+        where_sql = "WHERE " + " AND ".join(where_clauses)
         sql = f"""
             SELECT 
                 t.catId, t.objId, t.obCode, t.ra, t.dec,
                 t.classificationName, t.bestRedshift, t.bestVelocity
             FROM {tbl} t
             {where_sql}
-            ORDER BY t.objId ASC
             LIMIT ?
         """
         cur.execute(sql, params + [limit])

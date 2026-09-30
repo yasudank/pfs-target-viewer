@@ -464,8 +464,8 @@ function initEventListeners() {
     elements.skyMapResetBtn.addEventListener("click", () => {
       if (elements.skyPlotly) {
         Plotly.relayout(elements.skyPlotly, {
-          "xaxis.range": [3.15, -3.15],
-          "yaxis.range": [-3.15, 3.15],
+          "xaxis.range": [3.25, -3.25],
+          "yaxis.range": [-1.625, 1.625],
           "xaxis.autorange": false,
           "yaxis.autorange": false,
         });
@@ -886,8 +886,8 @@ function getMollweideAnnotations() {
     { x: 0, y: -1.25, text: "-60°", showarrow: false, font: { color: "#64748b", size: 9 }, bgcolor: "rgba(11, 17, 32, 0.75)" },
 
     // Celestial Poles
-    { x: 0, y: 1.54, text: "NCP (+90°)", showarrow: false, font: { color: "#38bdf8", size: 10, weight: 600 } },
-    { x: 0, y: -1.54, text: "SCP (-90°)", showarrow: false, font: { color: "#38bdf8", size: 10, weight: 600 } },
+    { x: 0, y: 1.50, text: "NCP (+90°)", showarrow: false, font: { color: "#38bdf8", size: 10, weight: 600 } },
+    { x: 0, y: -1.50, text: "SCP (-90°)", showarrow: false, font: { color: "#38bdf8", size: 10, weight: 600 } },
 
     // Celestial East / West labels (Astronomical standard: East is left)
     { x: 2.83, y: 1.25, text: "East (RA &rarr;)", showarrow: false, font: { color: "#38bdf8", size: 10 } },
@@ -941,9 +941,9 @@ function renderSkyMap(pageTargets) {
             font: { color: "#9ca3af", size: 14 },
           },
         ],
-        xaxis: { range: [3.15, -3.15], scaleanchor: "y", scaleratio: 1, visible: false },
-        yaxis: { range: [-3.15, 3.15], scaleanchor: "x", scaleratio: 1, visible: false },
-        margin: { l: 20, r: 20, t: 30, b: 20 },
+        xaxis: { range: [3.25, -3.25], visible: false },
+        yaxis: { range: [-1.625, 1.625], scaleanchor: "x", scaleratio: 1, visible: false },
+        margin: { l: 15, r: 15, t: 25, b: 15 },
       },
       { responsive: true, displayModeBar: false }
     );
@@ -977,9 +977,9 @@ function renderSkyMap(pageTargets) {
             font: { color: "#9ca3af", size: 14 },
           },
         ],
-        xaxis: { range: [3.15, -3.15], scaleanchor: "y", scaleratio: 1, visible: false },
-        yaxis: { range: [-3.15, 3.15], scaleanchor: "x", scaleratio: 1, visible: false },
-        margin: { l: 20, r: 20, t: 30, b: 20 },
+        xaxis: { range: [3.25, -3.25], visible: false },
+        yaxis: { range: [-1.625, 1.625], scaleanchor: "x", scaleratio: 1, visible: false },
+        margin: { l: 15, r: 15, t: 25, b: 15 },
       },
       { responsive: true, displayModeBar: false }
     );
@@ -1087,7 +1087,7 @@ function renderSkyMap(pageTargets) {
   const layout = {
     paper_bgcolor: "#111827",
     plot_bgcolor: "#0b1120",
-    margin: { l: 20, r: 20, t: 30, b: 20 },
+    margin: { l: 15, r: 15, t: 25, b: 15 },
     hovermode: "closest",
     dragmode: "pan",
     showlegend: true,
@@ -1103,16 +1103,14 @@ function renderSkyMap(pageTargets) {
     },
     annotations: getMollweideAnnotations(),
     xaxis: {
-      range: [3.15, -3.15], // Astronomical standard: RA increases to the left
-      scaleanchor: "y",
-      scaleratio: 1,
+      range: [3.25, -3.25], // Astronomical standard: RA increases to the left
       showgrid: false,
       zeroline: false,
       showticklabels: false,
       fixedrange: false,
     },
     yaxis: {
-      range: [-3.15, 3.15],
+      range: [-1.625, 1.625],
       scaleanchor: "x",
       scaleratio: 1,
       showgrid: false,

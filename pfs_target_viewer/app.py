@@ -13,7 +13,7 @@ import sqlite3
 import time
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
 try:
     from PIL import Image, ImageStat
@@ -415,6 +415,40 @@ def get_stats(refresh: bool = Query(False, description="Force refresh statistics
         conn.close()
 
 
+def build_spatial_clauses(
+    min_ra: Optional[float],
+    max_ra: Optional[float],
+    min_dec: Optional[float],
+    max_dec: Optional[float],
+) -> Tuple[List[str], List[Any]]:
+    clauses: List[str] = []
+    params: List[Any] = []
+
+    if min_dec is not None:
+        clauses.append("t.dec >= ?")
+        params.append(min_dec)
+    if max_dec is not None:
+        clauses.append("t.dec <= ?")
+        params.append(max_dec)
+
+    if min_ra is not None and max_ra is not None:
+        if min_ra <= max_ra:
+            clauses.append("t.ra >= ? AND t.ra <= ?")
+            params.extend([min_ra, max_ra])
+        else:
+            # RA wraps around 360 / 0 deg (e.g. 350 to 20)
+            clauses.append("(t.ra >= ? OR t.ra <= ?)")
+            params.extend([min_ra, max_ra])
+    elif min_ra is not None:
+        clauses.append("t.ra >= ?")
+        params.append(min_ra)
+    elif max_ra is not None:
+        clauses.append("t.ra <= ?")
+        params.append(max_ra)
+
+    return clauses, params
+
+
 @app.get("/api/targets")
 def get_targets(
     q: Optional[str] = Query(None, description="Search query in obCode, objId, or catId"),
@@ -423,6 +457,10 @@ def get_targets(
     max_z: Optional[float] = Query(None, description="Maximum redshift"),
     cat_id: Optional[int] = Query(None, description="Filter by catId"),
     combination: Optional[str] = Query(None, description="Filter by combination"),
+    min_ra: Optional[float] = Query(None, description="Minimum Right Ascension (deg)"),
+    max_ra: Optional[float] = Query(None, description="Maximum Right Ascension (deg)"),
+    min_dec: Optional[float] = Query(None, description="Minimum Declination (deg)"),
+    max_dec: Optional[float] = Query(None, description="Maximum Declination (deg)"),
     has_fits: Optional[bool] = Query(None, description="Filter targets that have FITS files"),
     has_png: Optional[bool] = Query(None, description="Filter targets that have PNG spectra"),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
@@ -476,6 +514,11 @@ def get_targets(
     if combination:
         where_clauses.append("t.combination = ?")
         params.append(combination)
+
+    # Spatial box filter (RA / Dec)
+    spatial_clauses, spatial_params = build_spatial_clauses(min_ra, max_ra, min_dec, max_dec)
+    where_clauses.extend(spatial_clauses)
+    params.extend(spatial_params)
 
     conn = get_db()
     cur = conn.cursor()
@@ -583,6 +626,10 @@ def get_sky_positions(
     max_z: Optional[float] = Query(None, description="Maximum redshift"),
     cat_id: Optional[int] = Query(None, description="Filter by catId"),
     combination: Optional[str] = Query(None, description="Filter by combination"),
+    min_ra: Optional[float] = Query(None, description="Minimum Right Ascension (deg)"),
+    max_ra: Optional[float] = Query(None, description="Maximum Right Ascension (deg)"),
+    min_dec: Optional[float] = Query(None, description="Minimum Declination (deg)"),
+    max_dec: Optional[float] = Query(None, description="Maximum Declination (deg)"),
     has_fits: Optional[bool] = Query(None, description="Filter targets that have FITS spectra"),
     has_png: Optional[bool] = Query(None, description="Filter targets that have PNG spectra"),
     limit: int = Query(250000, description="Max coordinates to return"),
@@ -619,6 +666,11 @@ def get_sky_positions(
     if combination:
         where_clauses.append("t.combination = ?")
         params.append(combination)
+
+    # Spatial box filter (RA / Dec)
+    spatial_clauses, spatial_params = build_spatial_clauses(min_ra, max_ra, min_dec, max_dec)
+    where_clauses.extend(spatial_clauses)
+    params.extend(spatial_params)
 
     conn = get_db()
     cur = conn.cursor()

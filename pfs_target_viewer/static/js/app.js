@@ -62,6 +62,7 @@ const state = {
   // Sky Map Scope, Cache & Rotation
   skyScope: "all", // "page" or "all"
   skyCentralRa: 180, // Default central meridian: 180 deg (12h)
+  spatialFilter: null, // { min_ra, max_ra, min_dec, max_dec } or null
   allSkyTargets: null,
   allSkyLoading: false,
   lastFilterKey: null,
@@ -194,12 +195,18 @@ const elements = {
   skyMapZoomOutBtn: document.getElementById("skyMapZoomOutBtn"),
   skyMapResetBtn: document.getElementById("skyMapResetBtn"),
   skyMapToggleBtn: document.getElementById("skyMapToggleBtn"),
+  skyFilterByViewBtn: document.getElementById("skyFilterByViewBtn"),
   skyRotationToolbar: document.getElementById("skyRotationToolbar"),
   skyRa0Slider: document.getElementById("skyRa0Slider"),
   skyRa0Value: document.getElementById("skyRa0Value"),
   skyRotStepLeftBtn: document.getElementById("skyRotStepLeftBtn"),
   skyRotStepRightBtn: document.getElementById("skyRotStepRightBtn"),
   skyCenterTargetsBtn: document.getElementById("skyCenterTargetsBtn"),
+  spatialFilterBadge: document.getElementById("spatialFilterBadge"),
+  spatialFilterText: document.getElementById("spatialFilterText"),
+  clearSpatialFilterBtn: document.getElementById("clearSpatialFilterBtn"),
+  skySpatialBadge: document.getElementById("skySpatialBadge"),
+  skyClearSpatialBtn: document.getElementById("skyClearSpatialBtn"),
 };
 
 // ----------------------------------------------------------------------------
@@ -318,6 +325,8 @@ function initEventListeners() {
     state.max_z = null;
     state.has_png = null;
     state.has_fits = null;
+    state.spatialFilter = null;
+    updateSpatialFilterUI();
     state.skyCentralRa = 180;
     updateSkyRotationUI(180);
     state.page = 1;
@@ -538,6 +547,38 @@ function initEventListeners() {
     });
   }
 
+  // Filter Table by View Button
+  if (elements.skyFilterByViewBtn) {
+    elements.skyFilterByViewBtn.addEventListener("click", () => {
+      const bounds = getVisibleSkyBounds();
+      if (!bounds) {
+        alert("No valid sky region visible in current view.");
+        return;
+      }
+      if (bounds.isFullSky) {
+        if (state.spatialFilter) {
+          clearSpatialFilter();
+        } else {
+          alert("Currently displaying full sky view. Zoom in or pan to an area of interest first, then click 'Filter Table by View'.");
+        }
+        return;
+      }
+      applySpatialFilter(bounds);
+    });
+  }
+
+  // Clear Spatial Filter Buttons
+  if (elements.clearSpatialFilterBtn) {
+    elements.clearSpatialFilterBtn.addEventListener("click", () => {
+      clearSpatialFilter();
+    });
+  }
+  if (elements.skyClearSpatialBtn) {
+    elements.skyClearSpatialBtn.addEventListener("click", () => {
+      clearSpatialFilter();
+    });
+  }
+
   if (elements.skyMapZoomInBtn) {
     elements.skyMapZoomInBtn.addEventListener("click", () => {
       zoomSkyMap(0.7);
@@ -622,7 +663,10 @@ async function fetchTargets() {
   state.loading = true;
   elements.loadingOverlay.classList.add("active");
 
-  const filterKey = `${state.q || ""}|${state.classification || ""}|${state.cat_id || ""}|${state.min_z || ""}|${state.max_z || ""}|${state.has_png || ""}|${state.has_fits || ""}`;
+  const sfKey = state.spatialFilter
+    ? `${state.spatialFilter.min_ra}_${state.spatialFilter.max_ra}_${state.spatialFilter.min_dec}_${state.spatialFilter.max_dec}`
+    : "";
+  const filterKey = `${state.q || ""}|${state.classification || ""}|${state.cat_id || ""}|${state.min_z || ""}|${state.max_z || ""}|${state.has_png || ""}|${state.has_fits || ""}|${sfKey}`;
   if (state.lastFilterKey !== filterKey) {
     state.lastFilterKey = filterKey;
     state.allSkyTargets = null;
@@ -646,6 +690,21 @@ async function fetchTargets() {
   if (state.max_z !== null) params.append("max_z", state.max_z);
   if (state.has_fits !== null && state.has_fits !== undefined) params.append("has_fits", state.has_fits);
   if (state.has_png !== null && state.has_png !== undefined) params.append("has_png", state.has_png);
+
+  if (state.spatialFilter) {
+    if (state.spatialFilter.min_ra !== null && state.spatialFilter.min_ra !== undefined) {
+      params.append("min_ra", state.spatialFilter.min_ra);
+    }
+    if (state.spatialFilter.max_ra !== null && state.spatialFilter.max_ra !== undefined) {
+      params.append("max_ra", state.spatialFilter.max_ra);
+    }
+    if (state.spatialFilter.min_dec !== null && state.spatialFilter.min_dec !== undefined) {
+      params.append("min_dec", state.spatialFilter.min_dec);
+    }
+    if (state.spatialFilter.max_dec !== null && state.spatialFilter.max_dec !== undefined) {
+      params.append("max_dec", state.spatialFilter.max_dec);
+    }
+  }
 
   try {
     const res = await fetch(`/api/targets?${params.toString()}`);
@@ -803,6 +862,21 @@ async function fetchAllSkyPositions() {
   if (state.has_fits !== null && state.has_fits !== undefined) params.append("has_fits", state.has_fits);
   if (state.has_png !== null && state.has_png !== undefined) params.append("has_png", state.has_png);
 
+  if (state.spatialFilter) {
+    if (state.spatialFilter.min_ra !== null && state.spatialFilter.min_ra !== undefined) {
+      params.append("min_ra", state.spatialFilter.min_ra);
+    }
+    if (state.spatialFilter.max_ra !== null && state.spatialFilter.max_ra !== undefined) {
+      params.append("max_ra", state.spatialFilter.max_ra);
+    }
+    if (state.spatialFilter.min_dec !== null && state.spatialFilter.min_dec !== undefined) {
+      params.append("min_dec", state.spatialFilter.min_dec);
+    }
+    if (state.spatialFilter.max_dec !== null && state.spatialFilter.max_dec !== undefined) {
+      params.append("max_dec", state.spatialFilter.max_dec);
+    }
+  }
+
   try {
     const res = await fetch(`/api/targets/sky_positions?${params.toString()}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -844,6 +918,234 @@ function projectMollweide(raDeg, decDeg, ra0Deg = 180) {
   const x = (2 * sqrt2 / Math.PI) * deltaLambda * Math.cos(theta);
   const y = sqrt2 * Math.sin(theta);
   return { x, y };
+}
+
+function unprojectMollweide(x, y, ra0Deg = 180) {
+  const sqrt2 = Math.SQRT2;
+  const clampedY = Math.max(-sqrt2, Math.min(sqrt2, y));
+  const theta = Math.asin(clampedY / sqrt2);
+  const cosTheta = Math.cos(theta);
+
+  // Dec: sin(phi) = (2*theta + sin(2*theta)) / PI
+  const sinPhi = (2 * theta + Math.sin(2 * theta)) / Math.PI;
+  const clampedSinPhi = Math.max(-1, Math.min(1, sinPhi));
+  const phi = Math.asin(clampedSinPhi);
+  const dec = phi * (180 / Math.PI);
+
+  // RA: x = (2 * sqrt2 / PI) * deltaLambda * cos(theta)
+  let deltaLambdaDeg = 0;
+  if (Math.abs(cosTheta) > 1e-5) {
+    const deltaLambdaRad = (x * Math.PI) / (2 * sqrt2 * cosTheta);
+    deltaLambdaDeg = deltaLambdaRad * (180 / Math.PI);
+  }
+  const ra = ((ra0Deg + deltaLambdaDeg) % 360 + 360) % 360;
+
+  // Check if point is inside or very close to the Mollweide boundary ellipse: x^2 / 8 + y^2 / 2 <= 1
+  const insideEllipse = (x * x) / 8 + (y * y) / 2 <= 1.05;
+
+  return { ra, dec, deltaLambdaDeg, insideEllipse };
+}
+
+function getVisibleSkyBounds() {
+  const el = elements.skyPlotly;
+  if (!el || !el._fullLayout) return null;
+  const xa = el._fullLayout.xaxis;
+  const ya = el._fullLayout.yaxis;
+  if (!xa || !ya || !xa.range || !ya.range) return null;
+
+  const x0 = xa.range[0]; // left in screen (positive in Mollweide East=Left)
+  const x1 = xa.range[1]; // right in screen (negative)
+  const y0 = ya.range[0]; // bottom
+  const y1 = ya.range[1]; // top
+
+  const xMin = Math.min(x0, x1);
+  const xMax = Math.max(x0, x1);
+  const yMin = Math.min(y0, y1);
+  const yMax = Math.max(y0, y1);
+
+  const xSpan = xMax - xMin;
+  const ySpan = yMax - yMin;
+
+  // Check if view covers practically the entire all-sky ellipse (default span is 6.50 x 3.25)
+  if (xSpan >= 6.1 && ySpan >= 3.05) {
+    return { isFullSky: true };
+  }
+
+  const ra0 = state.skyCentralRa || 180;
+  const validPoints = [];
+
+  // Sample the visible viewport on a 20x20 grid
+  const nSteps = 20;
+  for (let i = 0; i <= nSteps; i++) {
+    const x = xMin + (i / nSteps) * xSpan;
+    for (let j = 0; j <= nSteps; j++) {
+      const y = yMin + (j / nSteps) * ySpan;
+      const pt = unprojectMollweide(x, y, ra0);
+      if (pt.insideEllipse && Math.abs(pt.deltaLambdaDeg) <= 180.1) {
+        validPoints.push(pt);
+      }
+    }
+  }
+
+  if (validPoints.length === 0) {
+    return null;
+  }
+
+  let minDec = 90, maxDec = -90;
+  validPoints.forEach((p) => {
+    if (p.dec < minDec) minDec = p.dec;
+    if (p.dec > maxDec) maxDec = p.dec;
+  });
+
+  let minDelta = 180, maxDelta = -180;
+  validPoints.forEach((p) => {
+    if (p.deltaLambdaDeg < minDelta) minDelta = p.deltaLambdaDeg;
+    if (p.deltaLambdaDeg > maxDelta) maxDelta = p.deltaLambdaDeg;
+  });
+
+  minDelta = Math.max(-180, minDelta);
+  maxDelta = Math.min(180, maxDelta);
+
+  if (maxDelta - minDelta >= 350) {
+    return {
+      isFullSky: false,
+      min_ra: null,
+      max_ra: null,
+      min_dec: parseFloat(minDec.toFixed(2)),
+      max_dec: parseFloat(maxDec.toFixed(2)),
+      ra0,
+    };
+  }
+
+  const raWest = ((ra0 + minDelta) % 360 + 360) % 360;
+  const raEast = ((ra0 + maxDelta) % 360 + 360) % 360;
+
+  return {
+    isFullSky: false,
+    min_ra: parseFloat(raWest.toFixed(2)),
+    max_ra: parseFloat(raEast.toFixed(2)),
+    min_dec: parseFloat(minDec.toFixed(2)),
+    max_dec: parseFloat(maxDec.toFixed(2)),
+    minDelta,
+    maxDelta,
+    ra0,
+  };
+}
+
+function getSpatialFilterBoxTrace(filter, ra0Deg) {
+  if (!filter || (filter.min_ra === null && filter.min_dec === null)) return null;
+
+  const minDec = filter.min_dec !== null ? filter.min_dec : -90;
+  const maxDec = filter.max_dec !== null ? filter.max_dec : 90;
+
+  const boxX = [];
+  const boxY = [];
+  const nSeg = 24;
+
+  const minRa = filter.min_ra;
+  const maxRa = filter.max_ra;
+
+  if (minRa !== null && maxRa !== null) {
+    let raSpan = maxRa - minRa;
+    if (raSpan < 0) raSpan += 360;
+
+    // 1. Bottom edge: minDec, from minRa to maxRa
+    for (let i = 0; i <= nSeg; i++) {
+      const ra = (minRa + (i / nSeg) * raSpan) % 360;
+      const pt = projectMollweide(ra, minDec, ra0Deg);
+      boxX.push(pt.x);
+      boxY.push(pt.y);
+    }
+    // 2. East edge: maxRa, from minDec to maxDec
+    for (let i = 0; i <= nSeg; i++) {
+      const dec = minDec + (i / nSeg) * (maxDec - minDec);
+      const pt = projectMollweide(maxRa, dec, ra0Deg);
+      boxX.push(pt.x);
+      boxY.push(pt.y);
+    }
+    // 3. Top edge: maxDec, from maxRa back to minRa
+    for (let i = 0; i <= nSeg; i++) {
+      const ra = (maxRa - (i / nSeg) * raSpan + 360) % 360;
+      const pt = projectMollweide(ra, maxDec, ra0Deg);
+      boxX.push(pt.x);
+      boxY.push(pt.y);
+    }
+    // 4. West edge: minRa, from maxDec back to minDec
+    for (let i = 0; i <= nSeg; i++) {
+      const dec = maxDec - (i / nSeg) * (maxDec - minDec);
+      const pt = projectMollweide(minRa, dec, ra0Deg);
+      boxX.push(pt.x);
+      boxY.push(pt.y);
+    }
+  } else {
+    for (let ra = 0; ra <= 360; ra += 10) {
+      const pt = projectMollweide(ra, minDec, ra0Deg);
+      boxX.push(pt.x); boxY.push(pt.y);
+    }
+    for (let ra = 360; ra >= 0; ra -= 10) {
+      const pt = projectMollweide(ra, maxDec, ra0Deg);
+      boxX.push(pt.x); boxY.push(pt.y);
+    }
+  }
+
+  return {
+    type: "scatter",
+    mode: "lines",
+    name: "Selected View Region",
+    x: boxX,
+    y: boxY,
+    line: {
+      color: "#38bdf8",
+      width: 2.2,
+      dash: "dash",
+    },
+    fill: "toself",
+    fillcolor: "rgba(56, 189, 248, 0.12)",
+    hoverinfo: "none",
+    showlegend: true,
+  };
+}
+
+function updateSpatialFilterUI() {
+  const f = state.spatialFilter;
+  if (!f) {
+    if (elements.spatialFilterBadge) elements.spatialFilterBadge.style.display = "none";
+    if (elements.skySpatialBadge) elements.skySpatialBadge.style.display = "none";
+    return;
+  }
+
+  let text = "";
+  if (f.min_ra !== null && f.max_ra !== null) {
+    text = `RA: ${f.min_ra.toFixed(1)}°–${f.max_ra.toFixed(1)}°, Dec: ${f.min_dec > 0 ? "+" : ""}${f.min_dec.toFixed(1)}°–${f.max_dec > 0 ? "+" : ""}${f.max_dec.toFixed(1)}°`;
+  } else {
+    text = `Dec: ${f.min_dec > 0 ? "+" : ""}${f.min_dec.toFixed(1)}°–${f.max_dec > 0 ? "+" : ""}${f.max_dec.toFixed(1)}°`;
+  }
+
+  if (elements.spatialFilterText) elements.spatialFilterText.textContent = text;
+  if (elements.spatialFilterBadge) elements.spatialFilterBadge.style.display = "inline-flex";
+  if (elements.skySpatialBadge) elements.skySpatialBadge.style.display = "inline-flex";
+}
+
+function applySpatialFilter(bounds) {
+  state.spatialFilter = bounds;
+  updateSpatialFilterUI();
+  state.page = 1;
+  state.allSkyTargets = null;
+  fetchTargets();
+  if (state.skyScope === "all") {
+    fetchAllSkyPositions();
+  }
+}
+
+function clearSpatialFilter() {
+  state.spatialFilter = null;
+  updateSpatialFilterUI();
+  state.page = 1;
+  state.allSkyTargets = null;
+  fetchTargets();
+  if (state.skyScope === "all") {
+    fetchAllSkyPositions();
+  }
 }
 
 function degToRaHours(deg) {
@@ -1225,6 +1527,14 @@ function renderSkyMap(pageTargets) {
           "<span style='color:#38bdf8;font-size:11px;'>👆 Click marker to preview spectrum</span>" +
           "<extra></extra>",
       });
+    }
+  }
+
+  // If a spatial view filter is active, draw the bounding box region
+  if (state.spatialFilter) {
+    const boxTrace = getSpatialFilterBoxTrace(state.spatialFilter, state.skyCentralRa);
+    if (boxTrace) {
+      traces.push(boxTrace);
     }
   }
 

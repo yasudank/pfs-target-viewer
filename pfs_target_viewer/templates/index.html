@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PFS Target & Spectrum Viewer</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=1.9">
+  <link rel="stylesheet" href="/static/css/style.css?v=2.0">
   <style>
     th, .targets-table th, .detail-subtable th, .meta-label {
       text-transform: none !important;
@@ -121,6 +121,11 @@
     <div class="results-bar">
       <div class="results-info">
         <span id="resultsCount">Loading targets...</span>
+        <div id="spatialFilterBadge" class="spatial-filter-badge" style="display: none;">
+          <span class="badge-icon">📍</span>
+          <span id="spatialFilterText" class="badge-text">RA: 120.0°–160.0°, Dec: -10.0°–+25.0°</span>
+          <button type="button" id="clearSpatialFilterBtn" class="btn-clear-spatial" title="Remove spatial filter and restore all coordinates">✕ Clear</button>
+        </div>
       </div>
       <div class="page-size-selector">
         <label for="pageSizeSelect">Show:</label>
@@ -140,6 +145,10 @@
           <span class="sky-map-icon">🌌</span>
           <span class="sky-map-heading">Celestial Sky Distribution (Mollweide All-Sky)</span>
           <span class="badge badge-info" id="skyMapCount">0 targets</span>
+          <div id="skySpatialBadge" class="spatial-filter-badge" style="display: none;">
+            <span class="badge-icon">📍 View Filtered</span>
+            <button type="button" id="skyClearSpatialBtn" class="btn-clear-spatial" title="Remove spatial filter and restore all coordinates">✕</button>
+          </div>
           <span class="sky-map-hint">💡 Click marker to view spectrum</span>
         </div>
         <div class="sky-map-controls">
@@ -159,6 +168,9 @@
             <span class="legend-item"><span class="legend-dot dot-star"></span>Star</span>
           </div>
           <div class="btn-group">
+            <button class="btn btn-sm btn-primary btn-filter-view" id="skyFilterByViewBtn" title="Filter the target table to only show targets within the current visible map view">
+              🔍 Filter Table by View
+            </button>
             <button class="btn btn-sm btn-secondary" id="skyMapZoomInBtn" title="Zoom in">🔍+</button>
             <button class="btn btn-sm btn-secondary" id="skyMapZoomOutBtn" title="Zoom out">🔍−</button>
             <button class="btn btn-sm btn-secondary" id="skyMapResetBtn" title="Reset view to all targets">⟲ Reset</button>
@@ -593,6 +605,6 @@
   </div>
 
   <!-- Client-side script -->
-  <script src="/static/js/app.js?v=1.9"></script>
+  <script src="/static/js/app.js?v=2.0"></script>
 </body>
 </html>

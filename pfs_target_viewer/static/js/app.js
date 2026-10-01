@@ -2417,8 +2417,8 @@ function getMollweideAnnotations(ra0Deg = 180) {
     { x: 0, y: -1.50, text: "SCP (-90°)", showarrow: false, font: { color: "#38bdf8", size: 10, weight: 600 } },
 
     // Celestial East / West labels (Astronomical standard: East is left)
-    { x: 2.83, y: 1.25, text: "East (RA &rarr;)", showarrow: false, font: { color: "#38bdf8", size: 10 } },
-    { x: -2.83, y: 1.25, text: "(&larr; RA) West", showarrow: false, font: { color: "#38bdf8", size: 10 } },
+    { x: 2.83, y: 1.25, text: "East (RA →)", showarrow: false, font: { color: "#38bdf8", size: 10 } },
+    { x: -2.83, y: 1.25, text: "(← RA) West", showarrow: false, font: { color: "#38bdf8", size: 10 } },
   ];
 
   // Dynamic RA labels along Equator (every 30 deg = 2h)

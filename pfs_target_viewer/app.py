@@ -8,6 +8,7 @@ import glob
 import hashlib
 import io
 import json
+import gzip
 import os
 import sqlite3
 import time
@@ -412,6 +413,113 @@ def sanitize_val(v: Any) -> Any:
 
 
 # -----------------------------------------------------------------------------
+# Precomputed Full-Sky Celestial Coordinates In-Memory & Disk Cache
+# -----------------------------------------------------------------------------
+_MASTER_SKY_LOCK = threading.Lock()
+_MASTER_SKY_GZIP_BYTES: Optional[bytes] = None
+_MASTER_SKY_JSON_BYTES: Optional[bytes] = None
+_MASTER_SKY_ETAG: Optional[str] = None
+
+
+def get_sky_cache_file_path() -> str:
+    """Return path to persistent disk cache for full sky celestial coordinates."""
+    base_dir = os.path.dirname(DB_PATH) if DB_PATH else DEFAULT_BASE_DATA_DIR
+    return os.path.join(base_dir, ".sky_positions_cache.json.gz")
+
+
+def load_or_build_master_sky_cache(force: bool = False) -> Tuple[Optional[bytes], Optional[bytes], Optional[str]]:
+    """
+    Ensure the full celestial sky coordinates are cached in memory (both gzip and raw json bytes).
+    1. Loads from persistent .sky_positions_cache.json.gz on disk in ~2ms if it exists and is newer than database.
+    2. Otherwise queries SQLite database, builds coordinates, serializes, compresses, and saves disk cache.
+    """
+    global _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG
+    if not force and _MASTER_SKY_GZIP_BYTES is not None and _MASTER_SKY_JSON_BYTES is not None:
+        return _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG
+
+    with _MASTER_SKY_LOCK:
+        if not force and _MASTER_SKY_GZIP_BYTES is not None and _MASTER_SKY_JSON_BYTES is not None:
+            return _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG
+
+        cache_file = get_sky_cache_file_path()
+        db_mtime = os.path.getmtime(DB_PATH) if os.path.exists(DB_PATH) else 0
+
+        # 1. Try reading from disk cache if valid and newer than database
+        if not force and os.path.exists(cache_file) and os.path.getmtime(cache_file) >= db_mtime:
+            try:
+                t0 = time.time()
+                with open(cache_file, "rb") as f:
+                    gz_data = f.read()
+                raw_data = gzip.decompress(gz_data)
+                etag = f'W/"sky-{len(gz_data)}-{int(db_mtime)}"'
+                _MASTER_SKY_GZIP_BYTES = gz_data
+                _MASTER_SKY_JSON_BYTES = raw_data
+                _MASTER_SKY_ETAG = etag
+                print(f"  ⚡ Loaded master sky coordinates cache ({len(gz_data)/1024/1024:.2f} MB gzip) in {(time.time()-t0)*1000:.1f} ms")
+                return _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG
+            except Exception as e:
+                print(f"Warning: Failed reading sky disk cache: {e}. Rebuilding from database...")
+
+        # 2. Build from SQLite database
+        try:
+            t0 = time.time()
+            conn = get_db()
+            cur = conn.cursor()
+            tbl = get_summary_table(conn)
+            has_file_cols = check_db_file_columns(conn)
+            file_select = ", t.has_fits, t.has_png" if has_file_cols else ""
+            sql = f"""
+                SELECT 
+                    t.catId, t.objId, t.obCode, t.ra, t.dec,
+                    t.classificationName, t.bestRedshift, t.bestVelocity
+                    {file_select}
+                FROM {tbl} t
+                WHERE t.ra IS NOT NULL AND t.dec IS NOT NULL
+            """
+            cur.execute(sql)
+            rows = cur.fetchall()
+            results = []
+            for r in rows:
+                results.append({
+                    "catId": r["catId"],
+                    "objId": str(r["objId"]),
+                    "obCode": r["obCode"] or "",
+                    "ra": sanitize_val(r["ra"]),
+                    "dec": sanitize_val(r["dec"]),
+                    "classificationName": r["classificationName"] or "UNKNOWN",
+                    "bestRedshift": sanitize_val(r["bestRedshift"]),
+                    "bestVelocity": sanitize_val(r["bestVelocity"]),
+                    "has_fits": bool(r["has_fits"]) if has_file_cols else True,
+                    "has_png": bool(r["has_png"]) if has_file_cols else True,
+                })
+            conn.close()
+
+            raw_bytes = json.dumps({"total": len(results), "targets": results}).encode("utf-8")
+            gz_bytes = gzip.compress(raw_bytes, compresslevel=6)
+            etag = f'W/"sky-{len(gz_bytes)}-{int(db_mtime)}"'
+
+            _MASTER_SKY_GZIP_BYTES = gz_bytes
+            _MASTER_SKY_JSON_BYTES = raw_bytes
+            _MASTER_SKY_ETAG = etag
+
+            try:
+                with open(cache_file, "wb") as f:
+                    f.write(gz_bytes)
+            except Exception as e:
+                print(f"Warning: Could not save sky disk cache: {e}")
+
+            print(f"  ⚡ Built master sky coordinates cache ({len(results):,} targets, {len(gz_bytes)/1024/1024:.2f} MB gzip) in {time.time()-t0:.2f}s")
+            return _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG
+        except Exception as e:
+            print(f"Error building master sky coordinates cache: {e}")
+            return None, None, None
+
+
+# Pre-warm master sky cache in background thread at process startup
+threading.Thread(target=load_or_build_master_sky_cache, daemon=True).start()
+
+
+# -----------------------------------------------------------------------------
 # Frontend Route
 # -----------------------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
@@ -682,6 +790,7 @@ def get_targets(
 
 @app.get("/api/targets/sky_positions")
 def get_sky_positions(
+    request: Request,
     q: Optional[str] = Query(None, description="Search query in obCode, objId, or catId"),
     classification: Optional[str] = Query(None, description="Filter by classification (GALAXY, QSO, STAR)"),
     min_z: Optional[float] = Query(None, description="Minimum redshift"),
@@ -697,6 +806,39 @@ def get_sky_positions(
     limit: int = Query(500000, description="Max coordinates to return"),
 ):
     """Retrieve lightweight celestial coordinates for all filtered targets (for full sky map display)."""
+    # Fast-path: Unconditional master celestial coordinates query (pre-computed in-memory cache)
+    is_unfiltered = (
+        not q and not classification and min_z is None and max_z is None
+        and cat_id is None and not combination and min_ra is None and max_ra is None
+        and min_dec is None and max_dec is None and has_fits is None and has_png is None
+        and (limit is None or limit >= 210000)
+    )
+    if is_unfiltered:
+        gz_data, raw_data, etag = load_or_build_master_sky_cache()
+        if etag and request.headers.get("if-none-match") == etag:
+            return Response(status_code=304)
+
+        accept_encoding = request.headers.get("accept-encoding", "").lower()
+        if "gzip" in accept_encoding and gz_data:
+            return Response(
+                content=gz_data,
+                media_type="application/json",
+                headers={
+                    "Content-Encoding": "gzip",
+                    "Cache-Control": "public, max-age=86400",
+                    "ETag": etag or 'W/"sky-cache"',
+                },
+            )
+        if raw_data:
+            return Response(
+                content=raw_data,
+                media_type="application/json",
+                headers={
+                    "Cache-Control": "public, max-age=86400",
+                    "ETag": etag or 'W/"sky-cache"',
+                },
+            )
+
     where_clauses = ["t.ra IS NOT NULL", "t.dec IS NOT NULL"]
     params: List[Any] = []
 

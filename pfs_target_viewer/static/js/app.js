@@ -579,14 +579,14 @@ async function runSqlQuery(page = 1, skipSky = false, forceRefresh = false) {
     state.page = data.page;
     state.targets = data.targets || [];
 
-    // Identify custom columns that are not part of standard summary table
+    // Identify custom columns that are not already covered by the 7 fixed UI table columns
     const standardSet = new Set([
-      "catId", "objId", "ra", "dec", "tract", "patch", "priority",
-      "targetType", "proposalId", "obCode", "combination",
-      "classificationName", "bestRedshift", "bestRedshiftError",
-      "bestVelocity", "bestVelocityError", "bestSubClass", "bestChi2",
-      "probaGalaxy", "probaQSO", "probaStar", "solverWarnings",
-      "has_fits", "has_png"
+      "catId", "objId", "obCode",
+      "ra", "dec",
+      "classificationName", "probaGalaxy", "probaQSO", "probaStar",
+      "bestRedshift", "bestRedshiftError", "bestVelocity", "bestVelocityError",
+      "bestSubClass",
+      "has_fits", "has_png", "fits_path", "png_path"
     ]);
     state.sqlCustomColumns = (data.columns || []).filter((c) => !standardSet.has(c));
 
@@ -1835,7 +1835,7 @@ function renderTargetsTable(targets) {
         <td class="col-target ${targetHidden}" data-col="target">
           <span class="target-id">${t.objId}</span>
           ${t.obCode ? `<span class="obcode-badge">${t.obCode}</span>` : ""}
-          <div class="cat-id-muted">catId: ${t.catId} &bull; ${t.combination || ""}</div>
+          <div class="cat-id-muted">${(state.filterMode !== "sql" || !(state.sqlCustomColumns && state.sqlCustomColumns.includes("combination"))) && t.combination ? `catId: ${t.catId} &bull; ${t.combination}` : `catId: ${t.catId}`}</div>
         </td>
         <td class="col-coords ${coordsHidden}" data-col="coords">
           <div class="coords-text">RA: ${raStr}</div>

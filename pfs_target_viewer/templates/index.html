@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PFS Target & Spectrum Viewer</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=2.6">
+  <link rel="stylesheet" href="/static/css/style.css?v=2.7">
   <style>
     th, .targets-table th, .detail-subtable th, .meta-label {
       text-transform: none !important;
@@ -160,7 +160,7 @@
 
             <!-- SQL Textarea / Editor -->
             <div class="sql-editor-wrapper">
-              <textarea id="sqlQueryInput" class="sql-textarea" rows="6" spellcheck="false" placeholder="-- Enter SQL query or choose template above...">SELECT *
+              <textarea id="sqlQueryInput" class="sql-textarea" rows="14" spellcheck="false" placeholder="-- Enter SQL query or choose template above...">SELECT *
 FROM target_summary
 WHERE classificationName = 'QSO' AND bestRedshift > 2.0
 ORDER BY bestRedshift DESC</textarea>

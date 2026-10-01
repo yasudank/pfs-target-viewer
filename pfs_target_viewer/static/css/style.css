@@ -2103,6 +2103,7 @@ th.col-hidden, td.col-hidden {
 }
 
 .sql-toolbar {
+  flex-shrink: 0;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -2153,6 +2154,10 @@ th.col-hidden, td.col-hidden {
 
 .sql-editor-wrapper {
   position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 380px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-color);
   background: #090e17;
@@ -2167,11 +2172,13 @@ th.col-hidden, td.col-hidden {
 
 .sql-textarea {
   width: 100%;
-  min-height: 120px;
+  flex: 1;
+  height: 100%;
+  min-height: 380px;
   background: transparent;
   border: none;
   outline: none;
-  padding: 0.75rem 1rem;
+  padding: 0.85rem 1rem;
   font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
   font-size: 0.85rem;
   line-height: 1.5;
@@ -2187,6 +2194,7 @@ th.col-hidden, td.col-hidden {
 }
 
 .sql-actions-row {
+  flex-shrink: 0;
   display: flex;
   justify-content: space-between;
   align-items: center;

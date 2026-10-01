@@ -1,5 +1,6 @@
 # Databases and heavy data directories
 *.sqlite3
+*.db
 pfs_metadata.sqlite3
 gen3.sqlite3
 extracted_targets/

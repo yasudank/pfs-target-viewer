@@ -38,6 +38,25 @@ const SPECTRAL_LINES = [
 
 const C_KMS = 299792.458;
 
+// Default hidden columns (internal management / large paths)
+const DEFAULT_HIDDEN_COLUMNS = new Set([
+  "fits_path",
+  "png_path",
+  "has_fits",
+  "has_png"
+]);
+
+// Standard columns definitions in display order (Spectrum first, Details second)
+const STANDARD_COLUMNS = [
+  { key: "thumb", label: "Spectrum Thumbnail" },
+  { key: "actions", label: "Details" },
+  { key: "target", label: "Target ID & obCode" },
+  { key: "coords", label: "Coordinates (RA, Dec)" },
+  { key: "class", label: "Classification" },
+  { key: "redshift", label: "Best Redshift / Velocity" },
+  { key: "subclass", label: "SubClass" },
+];
+
 // Application State
 const state = {
   q: "",
@@ -71,10 +90,60 @@ const state = {
   // Image Preview Navigation
   imagePreviewList: null,
   imagePreviewIndex: 0,
+
+  // Custom SQL Query Mode State
+  filterMode: "standard", // "standard" or "sql"
+  sqlQuery: "",
+  activeSqlQuery: "", // The currently applied SQL query
+  sqlColumns: [],     // Returned column names from SQL query
+  sqlCustomColumns: [], // Columns beyond the standard schema
+  sqlLoading: false,
+  schemaData: null,   // Cached database schema from /api/sql/schema
+  schemaExpandedTables: new Set(["target_summary"]), // Default expanded tables
+
+  // Column Visibility State
+  hiddenColumns: new Set(["fits_path", "png_path", "has_fits", "has_png"]),
+
+  // SQL Sorting State
+  sqlSortBy: null,
+  sqlOrder: "asc",
 };
 
 // DOM Element Selectors
 const elements = {
+  // Mode switch tabs
+  tabStandardFilter: document.getElementById("tabStandardFilter"),
+  tabSqlQuery: document.getElementById("tabSqlQuery"),
+  standardFilterContainer: document.getElementById("standardFilterContainer"),
+  sqlFilterContainer: document.getElementById("sqlFilterContainer"),
+
+  // SQL Query Controls
+  sqlTemplateSelect: document.getElementById("sqlTemplateSelect"),
+  clearSqlBtn: document.getElementById("clearSqlBtn"),
+  sqlQueryInput: document.getElementById("sqlQueryInput"),
+  runSqlQueryBtn: document.getElementById("runSqlQueryBtn"),
+  validateSqlBtn: document.getElementById("validateSqlBtn"),
+  toggleSchemaBtn: document.getElementById("toggleSchemaBtn"),
+  sqlStatusFeedback: document.getElementById("sqlStatusFeedback"),
+  sqlSchemaPane: document.getElementById("sqlSchemaPane"),
+  schemaSearchInput: document.getElementById("schemaSearchInput"),
+  schemaTree: document.getElementById("schemaTree"),
+  schemaTableCountBadge: document.getElementById("schemaTableCountBadge"),
+  schemaExpandAllBtn: document.getElementById("schemaExpandAllBtn"),
+  schemaCollapseAllBtn: document.getElementById("schemaCollapseAllBtn"),
+  sqlFilterBadge: document.getElementById("sqlFilterBadge"),
+  sqlFilterText: document.getElementById("sqlFilterText"),
+  clearSqlFilterBadgeBtn: document.getElementById("clearSqlFilterBadgeBtn"),
+
+  // Column Visibility Controls
+  columnVisibilityDropdown: document.getElementById("columnVisibilityDropdown"),
+  columnToggleBtn: document.getElementById("columnToggleBtn"),
+  columnCountBadge: document.getElementById("columnCountBadge"),
+  columnDropdownMenu: document.getElementById("columnDropdownMenu"),
+  columnDropdownList: document.getElementById("columnDropdownList"),
+  colSelectAllBtn: document.getElementById("colSelectAllBtn"),
+  colResetDefaultBtn: document.getElementById("colResetDefaultBtn"),
+
   searchInput: document.getElementById("searchInput"),
   clearSearchBtn: document.getElementById("clearSearchBtn"),
   classPills: document.getElementById("classPills"),
@@ -87,6 +156,7 @@ const elements = {
   resetFiltersBtn: document.getElementById("resetFiltersBtn"),
 
   resultsCount: document.getElementById("resultsCount"),
+  tableScrollWrapper: document.getElementById("tableScrollWrapper"),
   targetsTable: document.getElementById("targetsTable"),
   targetsTbody: document.getElementById("targetsTbody"),
   loadingOverlay: document.getElementById("loadingOverlay"),
@@ -210,20 +280,891 @@ const elements = {
 };
 
 // ----------------------------------------------------------------------------
+// Custom SQL Query Templates & Engine
+// ----------------------------------------------------------------------------
+const SQL_TEMPLATES = {
+  cone_search: `-- Cone Search within 60 arcseconds of RA: 150.0 deg, Dec: 2.0 deg
+-- Automatically uses (ra, dec) index bounding box + spherical Haversine distance
+SELECT *
+FROM target_summary
+WHERE CONE_SEARCH(ra, dec, 150.0, 2.0, 60.0)
+ORDER BY CONE_DIST_ARCSEC(ra, dec, 150.0, 2.0) ASC`,
+
+  cone_fov: `-- Search within Subaru PFS Field of View (~0.7 degree radius = 2520 arcsec)
+-- Automatically optimized with two-stage B-Tree coordinates filter
+SELECT *
+FROM target_summary
+WHERE CONE_SEARCH(ra, dec, 150.0, 2.0, 2520.0)
+ORDER BY CONE_DIST_ARCSEC(ra, dec, 150.0, 2.0) ASC`,
+
+  oii_emitters: `-- Measured spectral lines joined for targets in pointing cone (within 0.2 deg)
+SELECT 
+  ts.catId, ts.objId, ts.ra, ts.dec, ts.bestRedshift,
+  lm.lineName, lm.lineWave, lm.lineFlux, lm.lineEW
+FROM target_summary ts
+JOIN line_measurements lm ON ts.catId = lm.catId AND ts.objId = lm.objId
+WHERE CONE_SEARCH(ts.ra, ts.dec, 150.0, 2.0, 720.0)
+ORDER BY lm.lineFlux DESC`,
+
+  high_z_qso: `-- High-redshift Quasars (z > 3.0) with reliable redshift solution
+SELECT *
+FROM target_summary
+WHERE classificationName = 'QSO' 
+  AND bestRedshift > 3.0 
+  AND hasSolution = 1
+ORDER BY bestRedshift DESC`,
+
+  boundary_class: `-- Ambiguous classification: Probabilities for Galaxy and Star are both around 0.5
+SELECT 
+  catId, objId, classificationName, probaGalaxy, probaStar, probaQSO, bestRedshift
+FROM target_summary
+WHERE probaGalaxy BETWEEN 0.35 AND 0.65 
+  AND probaStar BETWEEN 0.35 AND 0.65
+ORDER BY ABS(probaGalaxy - probaStar) ASC`,
+
+  solver_warnings: `-- Targets flagged with Redshift Solver Warnings (zWarning or lWarning)
+SELECT 
+  ts.catId, ts.objId, ts.ra, ts.dec, ts.classificationName, ts.bestRedshift,
+  sr.zWarningValue, sr.zWarningName, sr.lWarningValue, sr.lWarningName
+FROM target_summary ts
+JOIN solver_results sr ON ts.catId = sr.catId AND ts.objId = sr.objId
+WHERE sr.zWarningValue > 0 OR sr.lWarningValue > 0
+ORDER BY sr.zWarningValue DESC`,
+
+  spectra_only: `-- Science targets with both coadded FITS spectra and PNG cutouts
+SELECT *
+FROM target_summary
+WHERE has_fits = 1 AND has_png = 1
+ORDER BY bestRedshift ASC`,
+};
+
+function setFilterMode(mode) {
+  state.filterMode = mode;
+  if (mode === "sql") {
+    if (elements.tabStandardFilter) elements.tabStandardFilter.classList.remove("active");
+    if (elements.tabSqlQuery) elements.tabSqlQuery.classList.add("active");
+    if (elements.standardFilterContainer) elements.standardFilterContainer.style.display = "none";
+    if (elements.sqlFilterContainer) elements.sqlFilterContainer.style.display = "block";
+    if (!state.schemaData) {
+      loadDatabaseSchema();
+    }
+  } else {
+    if (elements.tabSqlQuery) elements.tabSqlQuery.classList.remove("active");
+    if (elements.tabStandardFilter) elements.tabStandardFilter.classList.add("active");
+    if (elements.sqlFilterContainer) elements.sqlFilterContainer.style.display = "none";
+    if (elements.standardFilterContainer) elements.standardFilterContainer.style.display = "block";
+    if (state.activeSqlQuery) {
+      clearSqlQueryFilter();
+    }
+  }
+}
+
+async function loadDatabaseSchema() {
+  if (!elements.schemaTree) return;
+  elements.schemaTree.innerHTML = '<div class="schema-loading">Loading database schema...</div>';
+  try {
+    const res = await fetch("/api/sql/schema");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    state.schemaData = data;
+    if (elements.schemaTableCountBadge) {
+      const count = (data.tables || []).length;
+      elements.schemaTableCountBadge.textContent = `${count} tables`;
+    }
+    renderSchemaTree(elements.schemaSearchInput ? elements.schemaSearchInput.value : "");
+  } catch (err) {
+    console.error("Failed to load schema:", err);
+    elements.schemaTree.innerHTML = `<div class="schema-loading text-danger">Failed to load schema: ${err.message}</div>`;
+  }
+}
+
+function renderSchemaTree(filterText = "") {
+  if (!state.schemaData || !elements.schemaTree) return;
+  const q = (filterText || "").trim().toLowerCase();
+  const tables = state.schemaData.tables || [];
+
+  if (tables.length === 0) {
+    elements.schemaTree.innerHTML = '<div class="schema-loading">No tables found</div>';
+    return;
+  }
+
+  let html = "";
+  tables.forEach((tbl) => {
+    const tblName = tbl.name;
+    const tblDesc = tbl.description || "";
+    const isView = tbl.type === "view";
+    const tblMatch = tblName.toLowerCase().includes(q) || tblDesc.toLowerCase().includes(q);
+    const columns = tbl.columns || [];
+    const matchingCols = columns.filter((c) => {
+      if (!q) return true;
+      if (tblMatch) return true;
+      const cDesc = c.description || "";
+      return c.name.toLowerCase().includes(q) || cDesc.toLowerCase().includes(q);
+    });
+
+    if (q && !tblMatch && matchingCols.length === 0) return;
+
+    // Auto-expand matching tables on search, otherwise use persistent state
+    const isExpanded = q.length > 0 ? true : state.schemaExpandedTables.has(tblName);
+
+    const icon = isView ? "👁️" : "🗂️";
+    const arrow = isExpanded ? "▼" : "▶";
+    const rowCountStr = tbl.row_count != null ? tbl.row_count.toLocaleString() + " rows" : "";
+
+    html += `
+      <div class="schema-table-group ${isExpanded ? 'is-open' : ''}" id="schemaTableGroup_${tblName}" data-table="${tblName}">
+        <div class="schema-table-header" title="${tblDesc || tblName} (Click to toggle columns)" onclick="toggleSchemaTable('${tblName}')">
+          <span class="schema-table-name">
+            <span class="tree-arrow" id="arrow_${tblName}">${arrow}</span>
+            <span>${icon}</span>
+            <strong>${tblName}</strong>
+          </span>
+          <div class="schema-table-meta">
+            <span class="schema-table-badge badge-cols">${columns.length} cols</span>
+            ${rowCountStr ? `<span class="schema-table-badge">${rowCountStr}</span>` : ""}
+          </div>
+        </div>
+        <div class="schema-table-columns" id="schemaCols_${tblName}" style="display: ${isExpanded ? 'flex' : 'none'};">
+          ${matchingCols.map((c) => {
+            const pkClass = c.primary_key ? "primary-key" : "";
+            const tooltip = `${tblName}.${c.name} (${c.type})${c.description ? ' - ' + c.description : ''}`;
+            return `
+              <div class="schema-col-item ${pkClass}" 
+                   title="${tooltip}" 
+                   onclick="insertSchemaColumn('${c.name}', event)">
+                <div class="schema-col-left">
+                  <span class="schema-col-name">${c.name}</span>
+                </div>
+                <div class="schema-col-right">
+                  <span class="schema-col-type">${c.type}</span>
+                  <span class="schema-col-insert-hint">＋ Insert</span>
+                </div>
+              </div>
+            `;
+          }).join("")}
+        </div>
+      </div>
+    `;
+  });
+
+  elements.schemaTree.innerHTML = html || '<div class="schema-loading">No matching tables or columns</div>';
+}
+
+function toggleSchemaTable(tableName) {
+  const isCurrentlyExpanded = state.schemaExpandedTables.has(tableName);
+  if (isCurrentlyExpanded) {
+    state.schemaExpandedTables.delete(tableName);
+  } else {
+    state.schemaExpandedTables.add(tableName);
+  }
+
+  const colContainer = document.getElementById(`schemaCols_${tableName}`);
+  const arrow = document.getElementById(`arrow_${tableName}`);
+  const group = document.getElementById(`schemaTableGroup_${tableName}`);
+
+  const willBeExpanded = !isCurrentlyExpanded;
+  if (colContainer) {
+    colContainer.style.display = willBeExpanded ? "flex" : "none";
+  }
+  if (arrow) {
+    arrow.textContent = willBeExpanded ? "▼" : "▶";
+  }
+  if (group) {
+    group.classList.toggle("is-open", willBeExpanded);
+  }
+}
+
+function expandAllSchema() {
+  if (!state.schemaData || !state.schemaData.tables) return;
+  state.schemaData.tables.forEach((tbl) => state.schemaExpandedTables.add(tbl.name));
+  renderSchemaTree(elements.schemaSearchInput ? elements.schemaSearchInput.value : "");
+}
+
+function collapseAllSchema() {
+  state.schemaExpandedTables.clear();
+  renderSchemaTree(elements.schemaSearchInput ? elements.schemaSearchInput.value : "");
+}
+
+function insertSchemaColumn(columnName, event) {
+  if (event) {
+    event.stopPropagation();
+  }
+  if (!elements.sqlQueryInput) return;
+  insertTextAtCursor(elements.sqlQueryInput, columnName);
+
+  // Transient feedback in status bar
+  if (elements.sqlStatusFeedback) {
+    const originalHtml = elements.sqlStatusFeedback.innerHTML;
+    elements.sqlStatusFeedback.innerHTML = `<span class="status-indicator ready" style="color: #38bdf8;">✓ Inserted '${columnName}' at cursor</span>`;
+    setTimeout(() => {
+      if (elements.sqlStatusFeedback && elements.sqlStatusFeedback.innerHTML.includes(`Inserted '${columnName}'`)) {
+        elements.sqlStatusFeedback.innerHTML = originalHtml;
+      }
+    }, 2000);
+  }
+}
+
+function insertTextAtCursor(textarea, text) {
+  const start = textarea.selectionStart || 0;
+  const end = textarea.selectionEnd || 0;
+  const before = textarea.value.substring(0, start);
+  const after = textarea.value.substring(end);
+  textarea.value = before + text + after;
+  textarea.selectionStart = textarea.selectionEnd = start + text.length;
+  textarea.focus();
+}
+
+async function validateSql() {
+  const query = elements.sqlQueryInput.value.trim();
+  if (!query) {
+    setSqlFeedback("error", "Query editor is empty. Please enter an SQL query.");
+    return;
+  }
+  setSqlFeedback("running", "Validating query syntax...");
+  try {
+    const res = await fetch("/api/sql/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.valid) {
+      setSqlFeedback("error", `✗ Syntax Error: ${data.error || "Invalid SQL syntax"}`);
+    } else {
+      const rowEst = data.estimated_rows != null ? ` (~${data.estimated_rows.toLocaleString()} est. rows)` : "";
+      setSqlFeedback("success", `✓ Query syntax is valid${rowEst}`);
+    }
+  } catch (err) {
+    setSqlFeedback("error", `Validation error: ${err.message}`);
+  }
+}
+
+async function runSqlQuery(page = 1) {
+  const query = elements.sqlQueryInput.value.trim();
+  if (!query) {
+    setSqlFeedback("error", "Query editor is empty. Please enter an SQL query or select a template.");
+    return;
+  }
+
+  if (state.sqlLoading) return;
+  state.sqlLoading = true;
+  state.loading = true;
+  elements.loadingOverlay.classList.add("active");
+  setSqlFeedback("running", "Executing SQL query...");
+
+  try {
+    const res = await fetch("/api/sql/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: query,
+        page: page,
+        limit: state.limit,
+        sort_by: state.sqlSortBy,
+        order: state.sqlOrder,
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+    }
+
+    state.activeSqlQuery = query;
+    state.sqlColumns = data.columns || [];
+    state.total = data.total;
+    state.pages = data.pages;
+    state.page = data.page;
+    state.targets = data.targets || [];
+
+    // Identify custom columns that are not part of standard summary table
+    const standardSet = new Set([
+      "catId", "objId", "ra", "dec", "tract", "patch", "priority",
+      "targetType", "proposalId", "obCode", "combination",
+      "classificationName", "bestRedshift", "bestRedshiftError",
+      "bestVelocity", "bestVelocityError", "bestSubClass", "bestChi2",
+      "probaGalaxy", "probaQSO", "probaStar", "solverWarnings",
+      "has_fits", "has_png"
+    ]);
+    state.sqlCustomColumns = (data.columns || []).filter((c) => !standardSet.has(c));
+
+    // Show SQL Active Badge
+    if (elements.sqlFilterBadge) {
+      elements.sqlFilterBadge.style.display = "inline-flex";
+      if (elements.sqlFilterText) {
+        elements.sqlFilterText.textContent = `SQL: ${data.total.toLocaleString()} targets (${data.execution_time_ms} ms)`;
+      }
+    }
+
+    setSqlFeedback("success", `✓ Query completed in ${data.execution_time_ms} ms (${data.total.toLocaleString()} rows found)`);
+
+    // Update Sky Map coordinates with returned sky_targets
+    if (data.sky_targets) {
+      state.allSkyTargets = data.sky_targets;
+      if (state.skyScope === "all") {
+        renderSkyMap(state.targets);
+      }
+    }
+
+    updateTableHeaders();
+    renderTargetsTable(data.targets);
+    updateTableSortIndicators();
+    updatePaginationUI();
+  } catch (err) {
+    console.error("SQL execution error:", err);
+    setSqlFeedback("error", `✗ Execution failed: ${err.message}`);
+    elements.targetsTbody.innerHTML = `<tr><td colspan="7" class="text-center text-muted" style="padding: 2rem;">
+      <div style="color: #f87171; font-weight: 600; margin-bottom: 0.5rem; font-size: 1rem;">SQL Execution Failed</div>
+      <div style="font-family: monospace; font-size: 0.85rem; color: #cbd5e1; white-space: pre-wrap; max-width: 600px; margin: 0 auto; background: rgba(0,0,0,0.3); padding: 0.75rem; border-radius: 4px; border: 1px solid rgba(248,113,113,0.3);">${err.message}</div>
+    </td></tr>`;
+  } finally {
+    state.sqlLoading = false;
+    state.loading = false;
+    elements.loadingOverlay.classList.remove("active");
+  }
+}
+
+function clearSqlQueryFilter() {
+  state.activeSqlQuery = "";
+  state.sqlColumns = [];
+  state.sqlCustomColumns = [];
+  state.sqlSortBy = null;
+  state.sqlOrder = "asc";
+  if (elements.sqlFilterBadge) {
+    elements.sqlFilterBadge.style.display = "none";
+  }
+  setSqlFeedback("ready", "Ready (Type query or pick template)");
+  updateTableHeaders();
+  updateTableSortIndicators();
+  state.page = 1;
+  updatePlottedSkyTargets();
+  fetchTargets();
+}
+
+function setSqlFeedback(status, message) {
+  if (!elements.sqlStatusFeedback) return;
+  let icon = "";
+  if (status === "running") {
+    icon = `<span style="display:inline-block;width:12px;height:12px;border:2px solid #38bdf8;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:4px;"></span>`;
+  } else if (status === "success") {
+    icon = `<span style="color:#4ade80;margin-right:4px;">✓</span>`;
+  } else if (status === "error") {
+    icon = `<span style="color:#f87171;margin-right:4px;">✗</span>`;
+  }
+  elements.sqlStatusFeedback.innerHTML = `<span class="status-indicator ${status}">${icon}${message}</span>`;
+}
+
+function isColumnVisible(colKey) {
+  return !state.hiddenColumns.has(colKey);
+}
+
+function setColumnVisible(colKey, visible) {
+  if (visible) {
+    state.hiddenColumns.delete(colKey);
+  } else {
+    state.hiddenColumns.add(colKey);
+  }
+  saveColumnVisibilityPreferences();
+  applyColumnVisibility();
+  updateColumnCountBadge();
+}
+
+function saveColumnVisibilityPreferences() {
+  try {
+    localStorage.setItem("pfs_hidden_columns", JSON.stringify(Array.from(state.hiddenColumns)));
+  } catch (e) {
+    // Ignore localStorage error
+  }
+}
+
+function loadColumnVisibilityPreferences() {
+  try {
+    const saved = localStorage.getItem("pfs_hidden_columns");
+    if (saved) {
+      const arr = JSON.parse(saved);
+      if (Array.isArray(arr)) {
+        state.hiddenColumns = new Set(arr);
+        return;
+      }
+    }
+  } catch (e) {
+    // Ignore localStorage error
+  }
+  state.hiddenColumns = new Set(DEFAULT_HIDDEN_COLUMNS);
+}
+
+function applyColumnVisibility() {
+  if (!elements.targetsTable) return;
+
+  // 1. Update thead headers
+  const ths = elements.targetsTable.querySelectorAll("thead th");
+  ths.forEach((th) => {
+    const colKey = th.dataset.col;
+    if (colKey) {
+      if (state.hiddenColumns.has(colKey)) {
+        th.classList.add("col-hidden");
+      } else {
+        th.classList.remove("col-hidden");
+      }
+    }
+  });
+
+  // 2. Update tbody cells
+  const trs = elements.targetsTable.querySelectorAll("tbody tr");
+  trs.forEach((tr) => {
+    const tds = tr.querySelectorAll("td");
+    tds.forEach((td) => {
+      const colKey = td.dataset.col;
+      if (colKey) {
+        if (state.hiddenColumns.has(colKey)) {
+          td.classList.add("col-hidden");
+        } else {
+          td.classList.remove("col-hidden");
+        }
+      }
+    });
+  });
+}
+
+function renderColumnVisibilityMenu() {
+  if (!elements.columnDropdownList) return;
+
+  let html = `<div class="column-item-group-title">Standard Columns</div>`;
+  STANDARD_COLUMNS.forEach((col) => {
+    const isChecked = isColumnVisible(col.key);
+    html += `
+      <label class="column-item-label">
+        <input type="checkbox" data-col="${col.key}" ${isChecked ? "checked" : ""}>
+        <span>${col.label}</span>
+      </label>
+    `;
+  });
+
+  if (state.sqlCustomColumns && state.sqlCustomColumns.length > 0) {
+    html += `<div class="column-item-group-title">Query Columns</div>`;
+    state.sqlCustomColumns.forEach((colName) => {
+      const isChecked = isColumnVisible(colName);
+      html += `
+        <label class="column-item-label">
+          <input type="checkbox" data-col="${colName}" ${isChecked ? "checked" : ""}>
+          <span style="font-family: var(--font-mono); font-size: 0.76rem;">${colName}</span>
+        </label>
+      `;
+    });
+  }
+
+  elements.columnDropdownList.innerHTML = html;
+  updateColumnCountBadge();
+
+  // Attach change listeners to checkboxes
+  elements.columnDropdownList.querySelectorAll("input[type='checkbox']").forEach((cb) => {
+    cb.addEventListener("change", (e) => {
+      const colKey = e.target.dataset.col;
+      setColumnVisible(colKey, e.target.checked);
+    });
+  });
+}
+
+function updateColumnCountBadge() {
+  if (!elements.columnCountBadge) return;
+  const total = STANDARD_COLUMNS.length + (state.sqlCustomColumns ? state.sqlCustomColumns.length : 0);
+  let visible = 0;
+  STANDARD_COLUMNS.forEach((c) => {
+    if (isColumnVisible(c.key)) visible++;
+  });
+  if (state.sqlCustomColumns) {
+    state.sqlCustomColumns.forEach((c) => {
+      if (isColumnVisible(c)) visible++;
+    });
+  }
+  elements.columnCountBadge.textContent = `${visible}/${total}`;
+}
+
+function updateTableHeaders() {
+  const theadTr = elements.targetsTable ? elements.targetsTable.querySelector("thead tr") : null;
+  if (!theadTr) return;
+
+  // Remove existing custom headers
+  theadTr.querySelectorAll(".col-custom-header").forEach((th) => th.remove());
+
+  // Append custom SQL columns to the end of the headers
+  if (state.sqlCustomColumns && state.sqlCustomColumns.length > 0) {
+    state.sqlCustomColumns.forEach((col) => {
+      const th = document.createElement("th");
+      th.className = "col-custom-header sortable-th";
+      th.dataset.col = col;
+      th.dataset.sort = col;
+      th.title = `Click to sort by ${col}`;
+      th.innerHTML = `
+        <div class="th-sort-wrapper">
+          <span>${col}</span>
+          <span class="sort-icon">↕</span>
+        </div>
+      `;
+      if (state.hiddenColumns.has(col)) {
+        th.classList.add("col-hidden");
+      }
+      theadTr.appendChild(th);
+    });
+  }
+
+  applyColumnVisibility();
+  renderColumnVisibilityMenu();
+  updateTableSortIndicators();
+}
+
+/**
+ * In-memory client-side sorting of targets array currently loaded in browser.
+ * Executes in <1ms without any database query, network lag, or server roundtrip.
+ */
+function sortTargetsInMemory(sortKey, order = "asc") {
+  if (!state.targets || state.targets.length === 0 || !sortKey) return;
+
+  const isAsc = (order || "asc").toLowerCase() === "asc";
+  const factor = isAsc ? 1 : -1;
+
+  state.targets.sort((a, b) => {
+    // 1. Coordinates: RA or Dec
+    if (sortKey === "ra" || sortKey === "dec") {
+      const valA = a[sortKey] !== null && a[sortKey] !== undefined ? Number(a[sortKey]) : null;
+      const valB = b[sortKey] !== null && b[sortKey] !== undefined ? Number(b[sortKey]) : null;
+      if (valA === null && valB === null) return 0;
+      if (valA === null) return 1; // nulls last
+      if (valB === null) return -1;
+      return (valA - valB) * factor;
+    }
+
+    // 2. Classification
+    if (sortKey === "classification" || sortKey === "classificationName") {
+      const classOrder = { GALAXY: 1, QSO: 2, STAR: 3, UNKNOWN: 4 };
+      const strA = (a.classificationName || "UNKNOWN").toUpperCase();
+      const strB = (b.classificationName || "UNKNOWN").toUpperCase();
+      const rankA = classOrder[strA] || 99;
+      const rankB = classOrder[strB] || 99;
+      if (rankA !== rankB) {
+        return (rankA - rankB) * factor;
+      }
+      // Secondary sort: within same class, sort by redshift or velocity so order visibly shifts
+      const zA = a.bestRedshift !== null && a.bestRedshift !== undefined ? Number(a.bestRedshift) : (a.bestVelocity !== null && a.bestVelocity !== undefined ? Number(a.bestVelocity) : -99999);
+      const zB = b.bestRedshift !== null && b.bestRedshift !== undefined ? Number(b.bestRedshift) : (b.bestVelocity !== null && b.bestVelocity !== undefined ? Number(b.bestVelocity) : -99999);
+      return (zA - zB) * factor;
+    }
+
+    // 3. Best Redshift / Velocity
+    if (sortKey === "redshift" || sortKey === "bestRedshift" || sortKey === "velocity" || sortKey === "bestVelocity") {
+      let numA = null;
+      let numB = null;
+
+      if (a.bestRedshift !== null && a.bestRedshift !== undefined) {
+        numA = Number(a.bestRedshift);
+      } else if (a.bestVelocity !== null && a.bestVelocity !== undefined) {
+        numA = Number(a.bestVelocity) / C_KMS; // Effective z for stars: v / c
+      }
+
+      if (b.bestRedshift !== null && b.bestRedshift !== undefined) {
+        numB = Number(b.bestRedshift);
+      } else if (b.bestVelocity !== null && b.bestVelocity !== undefined) {
+        numB = Number(b.bestVelocity) / C_KMS;
+      }
+
+      if (numA === null && numB === null) return 0;
+      if (numA === null) return 1; // nulls last
+      if (numB === null) return -1;
+      return (numA - numB) * factor;
+    }
+
+    // 4. Target ID & obCode
+    if (sortKey === "objId" || sortKey === "target") {
+      try {
+        const idA = BigInt(a.objId);
+        const idB = BigInt(b.objId);
+        if (idA < idB) return -1 * factor;
+        if (idA > idB) return 1 * factor;
+        return 0;
+      } catch (_) {
+        return String(a.objId).localeCompare(String(b.objId)) * factor;
+      }
+    }
+
+    // 5. SubClass
+    if (sortKey === "subclass" || sortKey === "bestSubClass") {
+      const subA = a.bestSubClass || "";
+      const subB = b.bestSubClass || "";
+      if (!subA && !subB) return 0;
+      if (!subA) return 1;
+      if (!subB) return -1;
+      return subA.localeCompare(subB) * factor;
+    }
+
+    // 6. Generic or Custom column (e.g. lineFlux, probaGalaxy, solverWarnings, etc.)
+    const valA = a[sortKey];
+    const valB = b[sortKey];
+    if (valA === valB) return 0;
+    if (valA === null || valA === undefined) return 1;
+    if (valB === null || valB === undefined) return -1;
+
+    if (typeof valA === "number" && typeof valB === "number") {
+      return (valA - valB) * factor;
+    }
+    const numCheckA = Number(valA);
+    const numCheckB = Number(valB);
+    if (!isNaN(numCheckA) && !isNaN(numCheckB)) {
+      return (numCheckA - numCheckB) * factor;
+    }
+    return String(valA).localeCompare(String(valB)) * factor;
+  });
+}
+
+function handleColumnHeaderSort(sortKey) {
+  if (!sortKey) return;
+
+  // Toggle order if clicking same column, else default based on column type
+  let newOrder = "asc";
+  const currentKey = state.activeSortKey || (state.activeSqlQuery ? state.sqlSortBy : state.sort_by);
+  const currentOrder = state.activeSortOrder || (state.activeSqlQuery ? state.sqlOrder : state.order) || "asc";
+
+  if (currentKey === sortKey) {
+    newOrder = currentOrder === "asc" ? "desc" : "asc";
+  } else {
+    // Default to DESC for Redshift so highest z appears first, ASC for other columns
+    if (sortKey === "bestRedshift" || sortKey === "redshift") {
+      newOrder = "desc";
+    } else {
+      newOrder = "asc";
+    }
+  }
+
+  state.activeSortKey = sortKey;
+  state.activeSortOrder = newOrder;
+
+  // Keep state sync
+  state.sort_by = sortKey;
+  state.order = newOrder;
+  state.sqlSortBy = sortKey;
+  state.sqlOrder = newOrder;
+
+  // Sync sortBySelect dropdown if matching option exists
+  if (elements.sortBySelect) {
+    const opt = Array.from(elements.sortBySelect.options).find(
+      (o) => o.value === sortKey && (o.dataset.order || "asc") === newOrder
+    );
+    if (opt) {
+      elements.sortBySelect.value = opt.value;
+    }
+  }
+
+  // 1. Instant client-side in-memory sort (<1ms, no server lag)
+  sortTargetsInMemory(sortKey, newOrder);
+
+  // 2. Re-render table and update indicator arrows immediately
+  renderTargetsTable(state.targets);
+  updateTableSortIndicators();
+}
+
+function updateTableSortIndicators() {
+  if (!elements.targetsTable) return;
+  const isSql = Boolean(state.activeSqlQuery);
+  const currentSort = isSql ? state.sqlSortBy : state.sort_by;
+  const currentOrder = isSql ? state.sqlOrder : state.order;
+  const iconText = (currentOrder || "asc").toLowerCase() === "desc" ? "▼" : "▲";
+
+  // 1. Standard sortable headers
+  const ths = elements.targetsTable.querySelectorAll("thead th.sortable-th");
+  ths.forEach((th) => {
+    const sortKey = th.dataset.sort;
+    const icon = th.querySelector(".sort-icon");
+    if (sortKey && currentSort && sortKey === currentSort) {
+      th.classList.add("sort-active");
+      if (icon) icon.textContent = iconText;
+    } else {
+      th.classList.remove("sort-active");
+      if (icon) icon.textContent = "↕";
+    }
+  });
+
+  // 2. Coordinate buttons (RA / Dec)
+  const raBtn = elements.targetsTable.querySelector("[data-sort-coord='ra']");
+  const decBtn = elements.targetsTable.querySelector("[data-sort-coord='dec']");
+  if (raBtn) {
+    const icon = raBtn.querySelector(".sort-icon");
+    if (currentSort === "ra") {
+      raBtn.classList.add("active");
+      if (icon) icon.textContent = iconText;
+    } else {
+      raBtn.classList.remove("active");
+      if (icon) icon.textContent = "↕";
+    }
+  }
+  if (decBtn) {
+    const icon = decBtn.querySelector(".sort-icon");
+    if (currentSort === "dec") {
+      decBtn.classList.add("active");
+      if (icon) icon.textContent = iconText;
+    } else {
+      decBtn.classList.remove("active");
+      if (icon) icon.textContent = "↕";
+    }
+  }
+}
+
+// ----------------------------------------------------------------------------
 // Initialization
 // ----------------------------------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
+  loadColumnVisibilityPreferences();
+  renderColumnVisibilityMenu();
   if (elements.sortBySelect && elements.sortBySelect.selectedOptions.length > 0) {
     const opt = elements.sortBySelect.selectedOptions[0];
     state.sort_by = opt.value;
     state.order = opt.dataset.order || "asc";
   }
   initEventListeners();
+  updateTableSortIndicators();
   loadStats();
   fetchTargets();
 });
 
 function initEventListeners() {
+  // Column Visibility Dropdown Controls
+  if (elements.columnToggleBtn && elements.columnDropdownMenu) {
+    elements.columnToggleBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const isHidden = elements.columnDropdownMenu.style.display === "none";
+      elements.columnDropdownMenu.style.display = isHidden ? "flex" : "none";
+      if (isHidden) {
+        renderColumnVisibilityMenu();
+      }
+    });
+
+    elements.columnDropdownMenu.addEventListener("click", (e) => {
+      e.stopPropagation();
+    });
+
+    document.addEventListener("click", (e) => {
+      if (elements.columnVisibilityDropdown && !elements.columnVisibilityDropdown.contains(e.target)) {
+        elements.columnDropdownMenu.style.display = "none";
+      }
+    });
+  }
+
+  if (elements.colSelectAllBtn) {
+    elements.colSelectAllBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      state.hiddenColumns.clear();
+      saveColumnVisibilityPreferences();
+      applyColumnVisibility();
+      renderColumnVisibilityMenu();
+    });
+  }
+
+  if (elements.colResetDefaultBtn) {
+    elements.colResetDefaultBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      state.hiddenColumns = new Set(DEFAULT_HIDDEN_COLUMNS);
+      saveColumnVisibilityPreferences();
+      applyColumnVisibility();
+      renderColumnVisibilityMenu();
+    });
+  }
+
+  // Mode Switch Tabs (Standard GUI vs SQL Query)
+  if (elements.tabStandardFilter) {
+    elements.tabStandardFilter.addEventListener("click", () => setFilterMode("standard"));
+  }
+  if (elements.tabSqlQuery) {
+    elements.tabSqlQuery.addEventListener("click", () => setFilterMode("sql"));
+  }
+
+  // SQL Query Controls
+  if (elements.sqlTemplateSelect) {
+    elements.sqlTemplateSelect.addEventListener("change", (e) => {
+      const tmplKey = e.target.value;
+      if (tmplKey && SQL_TEMPLATES[tmplKey]) {
+        elements.sqlQueryInput.value = SQL_TEMPLATES[tmplKey];
+        elements.sqlQueryInput.focus();
+        setSqlFeedback("ready", `Loaded template: ${e.target.selectedOptions[0].textContent}`);
+      }
+    });
+  }
+
+  if (elements.clearSqlBtn) {
+    elements.clearSqlBtn.addEventListener("click", () => {
+      elements.sqlQueryInput.value = "";
+      if (elements.sqlTemplateSelect) elements.sqlTemplateSelect.selectedIndex = 0;
+      setSqlFeedback("ready", "Query editor cleared. Pick a template or type query.");
+      elements.sqlQueryInput.focus();
+    });
+  }
+
+  if (elements.runSqlQueryBtn) {
+    elements.runSqlQueryBtn.addEventListener("click", () => {
+      state.page = 1;
+      state.sqlSortBy = null;
+      state.sqlOrder = "asc";
+      runSqlQuery(1);
+    });
+  }
+
+  if (elements.validateSqlBtn) {
+    elements.validateSqlBtn.addEventListener("click", () => {
+      validateSql();
+    });
+  }
+
+  if (elements.toggleSchemaBtn) {
+    elements.toggleSchemaBtn.addEventListener("click", () => {
+      if (elements.sqlSchemaPane) {
+        elements.sqlSchemaPane.classList.toggle("collapsed");
+      }
+    });
+  }
+
+  if (elements.schemaSearchInput) {
+    let schemaSearchTimer;
+    elements.schemaSearchInput.addEventListener("input", (e) => {
+      clearTimeout(schemaSearchTimer);
+      schemaSearchTimer = setTimeout(() => {
+        renderSchemaTree(e.target.value);
+      }, 200);
+    });
+  }
+
+  if (elements.schemaExpandAllBtn) {
+    elements.schemaExpandAllBtn.addEventListener("click", () => {
+      expandAllSchema();
+    });
+  }
+
+  if (elements.schemaCollapseAllBtn) {
+    elements.schemaCollapseAllBtn.addEventListener("click", () => {
+      collapseAllSchema();
+    });
+  }
+
+  if (elements.clearSqlFilterBadgeBtn) {
+    elements.clearSqlFilterBadgeBtn.addEventListener("click", () => {
+      clearSqlQueryFilter();
+    });
+  }
+
+  if (elements.sqlQueryInput) {
+    elements.sqlQueryInput.addEventListener("keydown", (e) => {
+      // Ctrl + Enter or Cmd + Enter to run SQL query
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        state.page = 1;
+        state.sqlSortBy = null;
+        state.sqlOrder = "asc";
+        runSqlQuery(1);
+      }
+      // Tab key support for indentation
+      if (e.key === "Tab") {
+        e.preventDefault();
+        insertTextAtCursor(elements.sqlQueryInput, "  ");
+      }
+    });
+  }
+
   // Search debouncing
   let searchTimer;
   elements.searchInput.addEventListener("input", (e) => {
@@ -287,14 +1228,43 @@ function initEventListeners() {
     state.sort_by = opt.value;
     state.order = opt.dataset.order || "asc";
     state.page = 1;
+    updateTableSortIndicators();
     fetchTargets();
   });
+
+  // Table Header Click Sorting (Standard & SQL modes)
+  if (elements.targetsTable) {
+    const thead = elements.targetsTable.querySelector("thead");
+    if (thead) {
+      thead.addEventListener("click", (e) => {
+        // 1. Check if clicked on RA or Dec sort button in Coordinates header
+        const coordBtn = e.target.closest("[data-sort-coord]");
+        if (coordBtn) {
+          e.stopPropagation();
+          const sortKey = coordBtn.dataset.sortCoord;
+          handleColumnHeaderSort(sortKey);
+          return;
+        }
+
+        // 2. Check if clicked on a sortable column header (th.sortable-th)
+        const th = e.target.closest("th.sortable-th");
+        if (th) {
+          const sortKey = th.dataset.sort;
+          handleColumnHeaderSort(sortKey);
+        }
+      });
+    }
+  }
 
   // Page Size
   elements.pageSizeSelect.addEventListener("change", (e) => {
     state.limit = parseInt(e.target.value, 10);
     state.page = 1;
-    fetchTargets();
+    if (state.filterMode === "sql" && state.activeSqlQuery) {
+      runSqlQuery(1);
+    } else {
+      fetchTargets();
+    }
   });
 
   // With Spectra Only Filter
@@ -344,14 +1314,22 @@ function initEventListeners() {
   elements.prevPageBtn.addEventListener("click", () => {
     if (state.page > 1) {
       state.page--;
-      fetchTargets();
+      if (state.filterMode === "sql" && state.activeSqlQuery) {
+        runSqlQuery(state.page);
+      } else {
+        fetchTargets();
+      }
     }
   });
 
   elements.nextPageBtn.addEventListener("click", () => {
     if (state.page < state.pages) {
       state.page++;
-      fetchTargets();
+      if (state.filterMode === "sql" && state.activeSqlQuery) {
+        runSqlQuery(state.page);
+      } else {
+        fetchTargets();
+      }
     }
   });
 
@@ -359,7 +1337,11 @@ function initEventListeners() {
     const val = parseInt(elements.pageJumpInput.value, 10);
     if (!isNaN(val) && val >= 1 && val <= state.pages) {
       state.page = val;
-      fetchTargets();
+      if (state.filterMode === "sql" && state.activeSqlQuery) {
+        runSqlQuery(state.page);
+      } else {
+        fetchTargets();
+      }
       elements.pageJumpInput.value = "";
     }
   });
@@ -708,7 +1690,10 @@ async function fetchTargets() {
     state.total = data.total;
     state.pages = data.pages;
     state.targets = data.targets || [];
+    state.sqlCustomColumns = []; // Reset custom columns in standard mode
+    updateTableHeaders();
     renderTargetsTable(data.targets);
+    updateTableSortIndicators();
     updatePaginationUI();
   } catch (err) {
     console.error("Error fetching targets:", err);
@@ -720,6 +1705,10 @@ async function fetchTargets() {
 }
 
 function renderTargetsTable(targets) {
+  if (elements.tableScrollWrapper) {
+    elements.tableScrollWrapper.scrollLeft = 0;
+  }
+  const colSpan = 7 + (state.sqlCustomColumns ? state.sqlCustomColumns.length : 0);
   if (!targets || targets.length === 0) {
     elements.targetsTbody.innerHTML = "";
     elements.emptyState.style.display = "block";
@@ -731,7 +1720,28 @@ function renderTargetsTable(targets) {
   elements.emptyState.style.display = "none";
   const startIdx = (state.page - 1) * state.limit + 1;
   const endIdx = Math.min(startIdx + targets.length - 1, state.total);
-  elements.resultsCount.textContent = `Showing ${startIdx.toLocaleString()}–${endIdx.toLocaleString()} of ${state.total.toLocaleString()} targets`;
+
+  const sortLabels = {
+    ra: "RA",
+    dec: "Dec",
+    objId: "Target ID",
+    target: "Target ID",
+    classificationName: "Classification",
+    classification: "Classification",
+    bestRedshift: "Redshift / Velocity",
+    redshift: "Redshift / Velocity",
+    bestSubClass: "SubClass",
+    subclass: "SubClass",
+  };
+  const activeSort = state.activeSortKey || (state.activeSqlQuery ? state.sqlSortBy : state.sort_by);
+  const activeOrder = state.activeSortOrder || (state.activeSqlQuery ? state.sqlOrder : state.order);
+  let sortBadge = "";
+  if (activeSort) {
+    const label = sortLabels[activeSort] || activeSort;
+    const orderIcon = (activeOrder || "asc").toLowerCase() === "desc" ? "▼ DESC" : "▲ ASC";
+    sortBadge = ` <span class="badge badge-sort-info" title="Current view sorted instantly in browser">⚡ Sorted: ${label} ${orderIcon}</span>`;
+  }
+  elements.resultsCount.innerHTML = `Showing ${startIdx.toLocaleString()}–${endIdx.toLocaleString()} of ${state.total.toLocaleString()} targets${sortBadge}`;
 
   const rowsHtml = targets
     .map((t) => {
@@ -742,19 +1752,19 @@ function renderTargetsTable(targets) {
       else if (cls === "STAR") badgeClass = "badge-star";
 
       // Probabilities
-      const pGal = t.probaGalaxy !== null ? (t.probaGalaxy * 100).toFixed(1) + "%" : "-";
-      const pQso = t.probaQSO !== null ? (t.probaQSO * 100).toFixed(1) + "%" : "-";
-      const pStar = t.probaStar !== null ? (t.probaStar * 100).toFixed(1) + "%" : "-";
+      const pGal = typeof t.probaGalaxy === "number" ? (t.probaGalaxy * 100).toFixed(1) + "%" : "-";
+      const pQso = typeof t.probaQSO === "number" ? (t.probaQSO * 100).toFixed(1) + "%" : "-";
+      const pStar = typeof t.probaStar === "number" ? (t.probaStar * 100).toFixed(1) + "%" : "-";
 
       // Redshift / Velocity
       let zDisplay = "-";
       let zErrDisplay = "";
-      if (cls === "STAR" && t.bestVelocity !== null) {
+      if (cls === "STAR" && typeof t.bestVelocity === "number") {
         zDisplay = `${t.bestVelocity.toFixed(1)} km/s`;
-        if (t.bestVelocityError) zErrDisplay = `&plusmn;${t.bestVelocityError.toFixed(1)}`;
-      } else if (t.bestRedshift !== null) {
+        if (typeof t.bestVelocityError === "number") zErrDisplay = `&plusmn;${t.bestVelocityError.toFixed(1)}`;
+      } else if (typeof t.bestRedshift === "number") {
         zDisplay = `z = ${t.bestRedshift.toFixed(4)}`;
-        if (t.bestRedshiftError) zErrDisplay = `&plusmn;${t.bestRedshiftError.toFixed(4)}`;
+        if (typeof t.bestRedshiftError === "number") zErrDisplay = `&plusmn;${t.bestRedshiftError.toFixed(4)}`;
       }
 
       // Thumbnail
@@ -766,45 +1776,79 @@ function renderTargetsTable(targets) {
         : `<div class="thumb-container thumb-placeholder">No PNG</div>`;
 
       // Coordinates
-      const raStr = t.ra !== null ? `${t.ra.toFixed(4)}°` : "-";
-      const decStr = t.dec !== null ? `${t.dec.toFixed(4)}°` : "-";
+      const raStr = typeof t.ra === "number" ? `${t.ra.toFixed(4)}°` : "-";
+      const decStr = typeof t.dec === "number" ? `${t.dec.toFixed(4)}°` : "-";
+
+      // Custom SQL columns rendering
+      let customCellsHtml = "";
+      if (state.sqlCustomColumns && state.sqlCustomColumns.length > 0) {
+        customCellsHtml = state.sqlCustomColumns.map((col) => {
+          const val = t[col];
+          let displayVal = "-";
+          if (val !== null && val !== undefined) {
+            if (typeof val === "number") {
+              if (Number.isInteger(val)) {
+                displayVal = val.toLocaleString();
+              } else if (val === 0) {
+                displayVal = "0";
+              } else {
+                const absVal = Math.abs(val);
+                if (absVal < 1e-4 || absVal >= 1e6) {
+                  displayVal = val.toExponential(3);
+                } else {
+                  displayVal = val.toFixed(4).replace(/\.?0+$/, "");
+                }
+              }
+            } else {
+              displayVal = String(val);
+            }
+          }
+          const hiddenClass = state.hiddenColumns.has(col) ? "col-hidden" : "";
+          return `<td class="col-custom ${hiddenClass}" data-col="${col}" title="${col}: ${displayVal}"><span class="custom-col-val" style="font-family: var(--font-mono); font-size: 0.8rem; color: #bae6fd;">${displayVal}</span></td>`;
+        }).join("");
+      }
+
+      const actionsHidden = state.hiddenColumns.has("actions") ? "col-hidden" : "";
+      const thumbHidden = state.hiddenColumns.has("thumb") ? "col-hidden" : "";
+      const targetHidden = state.hiddenColumns.has("target") ? "col-hidden" : "";
+      const coordsHidden = state.hiddenColumns.has("coords") ? "col-hidden" : "";
+      const classHidden = state.hiddenColumns.has("class") ? "col-hidden" : "";
+      const redshiftHidden = state.hiddenColumns.has("redshift") ? "col-hidden" : "";
+      const subclassHidden = state.hiddenColumns.has("subclass") ? "col-hidden" : "";
 
       return `
       <tr data-catid="${t.catId}" data-objid="${t.objId}">
-        <td class="col-thumb">${thumbHtml}</td>
-        <td class="col-target">
+        <td class="col-thumb ${thumbHidden}" data-col="thumb">${thumbHtml}</td>
+        <td class="col-actions ${actionsHidden}" data-col="actions">
+          <div class="action-buttons">
+            <button class="btn btn-sm btn-secondary" onclick="openTargetDetails(${t.catId}, '${t.objId}')" title="Inspect solver & line details">
+              📋 Details
+            </button>
+          </div>
+        </td>
+        <td class="col-target ${targetHidden}" data-col="target">
           <span class="target-id">${t.objId}</span>
           ${t.obCode ? `<span class="obcode-badge">${t.obCode}</span>` : ""}
           <div class="cat-id-muted">catId: ${t.catId} &bull; ${t.combination || ""}</div>
         </td>
-        <td class="col-coords">
+        <td class="col-coords ${coordsHidden}" data-col="coords">
           <div class="coords-text">RA: ${raStr}</div>
           <div class="coords-text">Dec: ${decStr}</div>
         </td>
-        <td class="col-class">
+        <td class="col-class ${classHidden}" data-col="class">
           <span class="badge ${badgeClass}">${cls}</span>
           <div class="proba-bar" title="G: ${pGal} | Q: ${pQso} | S: ${pStar}">
             G:${pGal} Q:${pQso} S:${pStar}
           </div>
         </td>
-        <td class="col-z">
+        <td class="col-z ${redshiftHidden}" data-col="redshift">
           <div class="z-val">${zDisplay}</div>
           ${zErrDisplay ? `<div class="z-err">${zErrDisplay}</div>` : ""}
         </td>
-        <td class="col-subclass">
+        <td class="col-subclass ${subclassHidden}" data-col="subclass">
           <span class="subclass-text">${t.bestSubClass || "-"}</span>
         </td>
-        <td class="col-actions">
-          <div class="action-buttons">
-            <button class="btn btn-sm btn-secondary" onclick="openTargetDetails(${t.catId}, '${t.objId}')" title="Inspect solver & line details">
-              📋 Details
-            </button>
-            <button class="btn btn-sm btn-primary" onclick="openInteractiveSpectrumById(${t.catId}, '${t.objId}')" title="Open interactive spectrum viewer">
-              📈 Plot
-            </button>
-            ${t.has_fits ? `<a class="btn btn-sm btn-secondary" href="/api/targets/${t.catId}/${t.objId}/fits" download title="Download raw FITS">💾 FITS</a>` : ""}
-          </div>
-        </td>
+        ${customCellsHtml}
       </tr>
       `;
     })
@@ -908,6 +1952,12 @@ function filterMasterSkyTargets() {
 }
 
 function updatePlottedSkyTargets() {
+  if (state.filterMode === "sql" && state.activeSqlQuery) {
+    if (state.skyScope === "all") {
+      renderSkyMap(state.targets);
+    }
+    return;
+  }
   if (state.masterSkyTargets) {
     state.allSkyTargets = filterMasterSkyTargets();
     if (state.skyScope === "all") {
@@ -1503,9 +2553,9 @@ function renderSkyMap(pageTargets) {
     const grp = groups[cls] || groups["UNKNOWN"];
 
     let zText = "";
-    if (cls === "STAR" && t.bestVelocity !== null) {
+    if (cls === "STAR" && typeof t.bestVelocity === "number") {
       zText = `Velocity: ${t.bestVelocity.toFixed(1)} km/s`;
-    } else if (t.bestRedshift !== null) {
+    } else if (typeof t.bestRedshift === "number") {
       zText = `Redshift: z = ${t.bestRedshift.toFixed(4)}`;
     }
 

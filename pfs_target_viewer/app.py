@@ -12,9 +12,12 @@ import os
 import sqlite3
 import time
 import urllib.parse
+import math
+import re
 import urllib.request
 from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
+from pydantic import BaseModel
 try:
     from PIL import Image, ImageStat
     HAS_PIL = True
@@ -22,7 +25,7 @@ except ImportError:
     HAS_PIL = False
 
 from astropy.io import fits
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
@@ -222,12 +225,58 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), na
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 
+def register_sql_functions(conn: sqlite3.Connection):
+    """Register custom astronomical and spatial functions into SQLite."""
+    deg2rad = math.pi / 180.0
+    rad2deg = 180.0 / math.pi
+
+    def _cone_dist_deg(ra1, dec1, ra2, dec2):
+        if ra1 is None or dec1 is None or ra2 is None or dec2 is None:
+            return None
+        try:
+            r1, d1 = float(ra1) * deg2rad, float(dec1) * deg2rad
+            r2, d2 = float(ra2) * deg2rad, float(dec2) * deg2rad
+            dlat = d2 - d1
+            dlon = r2 - r1
+            a = (math.sin(dlat * 0.5) ** 2) + math.cos(d1) * math.cos(d2) * (math.sin(dlon * 0.5) ** 2)
+            return 2.0 * math.asin(math.sqrt(min(1.0, max(0.0, a)))) * rad2deg
+        except Exception:
+            return None
+
+    def _cone_dist_arcsec(ra1, dec1, ra2, dec2):
+        d = _cone_dist_deg(ra1, dec1, ra2, dec2)
+        return (d * 3600.0) if d is not None else None
+
+    def _cone_search(ra, dec, c_ra, c_dec, radius_arcsec):
+        d = _cone_dist_arcsec(ra, dec, c_ra, c_dec)
+        if d is None:
+            return 0
+        return 1 if d <= float(radius_arcsec) else 0
+
+    conn.create_function("CONE_DIST_DEG", 4, _cone_dist_deg)
+    conn.create_function("CONE_DIST_ARCSEC", 4, _cone_dist_arcsec)
+    conn.create_function("CONE_SEARCH", 5, _cone_search)
+
+
+def set_query_timeout(conn: sqlite3.Connection, timeout_sec: float = 6.0):
+    """Interrupt queries that exceed execution time limit to prevent server stalls."""
+    start_time = time.time()
+
+    def _progress():
+        if time.time() - start_time > timeout_sec:
+            return 1  # non-zero interrupts SQLite query execution
+        return 0
+
+    conn.set_progress_handler(_progress, 20000)
+
+
 def get_db():
-    """Connect to SQLite database in read-only mode."""
+    """Connect to SQLite database in read-only mode with custom functions registered."""
     if not os.path.exists(DB_PATH):
         raise HTTPException(status_code=500, detail=f"Database file not found at {DB_PATH}")
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    register_sql_functions(conn)
     return conn
 
 
@@ -475,9 +524,18 @@ def get_targets(
         "objId": "t.objId",
         "catId": "t.catId",
         "obCode": "t.obCode",
+        "ra": "t.ra",
+        "dec": "t.dec",
+        "coords_ra": "t.ra",
+        "coords_dec": "t.dec",
         "classification": "t.classificationName",
+        "classificationName": "t.classificationName",
         "redshift": "t.bestRedshift",
+        "bestRedshift": "t.bestRedshift",
         "velocity": "t.bestVelocity",
+        "bestVelocity": "t.bestVelocity",
+        "subclass": "t.bestSubClass",
+        "bestSubClass": "t.bestSubClass",
         "probaGalaxy": "t.probaGalaxy",
         "probaQSO": "t.probaQSO",
         "probaStar": "t.probaStar",
@@ -1105,6 +1163,500 @@ def get_target_cutout(
             "Cache-Control": "public, max-age=86400",
         },
     )
+
+
+# -----------------------------------------------------------------------------
+# Custom SQL Query & Schema APIs
+# -----------------------------------------------------------------------------
+class SqlValidateRequest(BaseModel):
+    sql: Optional[str] = None
+    query: Optional[str] = None
+
+    def get_sql(self) -> str:
+        val = self.sql or self.query or ""
+        return val.strip()
+
+
+class SqlQueryRequest(BaseModel):
+    sql: Optional[str] = None
+    query: Optional[str] = None
+    page: int = 1
+    limit: int = 25
+    sort_by: Optional[str] = None
+    order: Optional[str] = "asc"
+    skip_sky: Optional[bool] = False
+
+    def get_sql(self) -> str:
+        val = self.sql or self.query or ""
+        return val.strip()
+
+
+def strip_trailing_order_by(sql: str) -> str:
+    """Strip the outermost trailing ORDER BY clause from a query for fast count(*) and sky extraction.
+
+    Uses reverse scanning instead of regex to avoid catastrophic backtracking on
+    complex queries with JOINs, qualified column names, and CONE_SEARCH(...) expressions.
+    Only strips ORDER BY if it appears at the top nesting level (not inside subqueries).
+    """
+    clean = sql.strip().rstrip(";").rstrip()
+
+    # Walk backwards through the string to find the last top-level ORDER BY.
+    # We need to track parenthesis depth to avoid stripping ORDER BY inside subqueries.
+    upper = clean.upper()
+
+    # Find the last occurrence of 'ORDER' that is followed by whitespace and 'BY'
+    search_from = len(upper)
+    while True:
+        pos = upper.rfind("ORDER", 0, search_from)
+        if pos < 0:
+            return clean  # No ORDER BY found at all
+
+        # Check that it's followed by whitespace + BY
+        rest = upper[pos + 5:].lstrip()
+        if not rest.startswith("BY"):
+            search_from = pos
+            continue
+
+        # Check that ORDER is at a word boundary (not part of a larger identifier)
+        if pos > 0 and (upper[pos - 1].isalnum() or upper[pos - 1] == "_"):
+            search_from = pos
+            continue
+
+        # Count parenthesis depth from start to this position.
+        # If depth != 0, this ORDER BY is inside a subquery — skip it.
+        depth = 0
+        for ch in clean[:pos]:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+
+        if depth != 0:
+            search_from = pos
+            continue
+
+        # This is a top-level ORDER BY. Strip everything from here to the end.
+        return clean[:pos].rstrip()
+
+
+DISALLOWED_SQL_PATTERNS = [
+    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|ATTACH|DETACH|PRAGMA|VACUUM|REINDEX)\b",
+    r"\b(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b",
+]
+
+KNOWN_COLUMN_DESCRIPTIONS = {
+    "catId": "PFS Catalog Identifier",
+    "objId": "PFS Object Identifier",
+    "obCode": "Observing Target Code Name",
+    "ra": "Right Ascension in degrees (J2000)",
+    "dec": "Declination in degrees (J2000)",
+    "classificationName": "Target classification (GALAXY, STAR, QSO, UNKNOWN)",
+    "probaGalaxy": "Posterior probability of being a Galaxy [0-1]",
+    "probaStar": "Posterior probability of being a Star [0-1]",
+    "probaQSO": "Posterior probability of being a QSO [0-1]",
+    "bestRedshift": "Best-fit redshift z",
+    "bestRedshiftError": "1-sigma uncertainty of best-fit redshift",
+    "bestVelocity": "Best-fit radial velocity (km/s)",
+    "bestVelocityError": "Uncertainty of radial velocity (km/s)",
+    "bestSubClass": "Best-fit spectral template subclass",
+    "hasSolution": "1 if a valid redshift solver solution was found, 0 otherwise",
+    "targetTypeName": "Target type designation (SCIENCE, SKY, FLUXSTD)",
+    "fiberStatusName": "Status of observing fiber (GOOD, BROKEN, UNILLUMINATED)",
+    "has_fits": "1 if 1D coadded FITS spectrum file is available",
+    "has_png": "1 if PNG preview spectrum thumbnail is available",
+    "fits_path": "Relative path to FITS spectrum file",
+    "png_path": "Relative path to PNG spectrum image",
+    "combination": "Coadd combination key (e.g. brn_run28)",
+    "objGroup": "Object group ID within coadd",
+    "visit": "Observation Visit ID",
+    "fiberId": "Spectrograph Fiber ID (1-2394)",
+    "lineName": "Emission / absorption line identifier (e.g. [OII]3727, Halpha)",
+    "wavelength": "Measured central line wavelength (Angstrom)",
+    "flux": "Integrated line flux (erg/s/cm^2)",
+    "fluxError": "1-sigma uncertainty of line flux",
+    "ew": "Equivalent width (Angstrom)",
+    "ewError": "Uncertainty of equivalent width",
+    "snr": "Signal-to-noise ratio of detected line",
+    "zWarningValue": "Bitmask of redshift solver warnings (0 = clean)",
+    "zWarningName": "Human-readable solver warning string",
+    "zErrorCode": "Solver error code if failed",
+    "zErrorMessage": "Solver error description",
+    "cRank": "Candidate solution rank (1 = best candidate)",
+    "redshift": "Candidate solution redshift",
+    "redshiftProba": "Candidate probability",
+}
+
+KNOWN_TABLE_DESCRIPTIONS = {
+    "target_summary": "High-performance materialized summary table with coordinates, classification, redshift, and spectrum files.",
+    "v_target_summary": "View of target summary combining targets, classifications, and latest fiber coordinates.",
+    "targets": "Classification results, template probabilities, and best-fit redshifts per target.",
+    "fiber_configs": "Per-visit fiber coordinates (ra, dec), PFI positions, and target configurations.",
+    "visits": "Visit metadata, design ID, pointing boresight, and observation timestamps.",
+    "solver_results": "Redshift solver warnings, errors, and candidate counts for galaxy/qso/star pipelines.",
+    "redshift_candidates": "Fitted candidate redshift and velocity solutions ranked by probability.",
+    "line_measurements": "Fitted emission and absorption line measurements (wavelength, flux, SNR, EW).",
+    "coadd_groups": "Coadd group combinations and target counts.",
+}
+
+
+def strip_sql_comments(sql: str) -> str:
+    """
+    Remove single-line comments (-- ...) and multi-line comments (/* ... */)
+    while preserving regular SQL text.
+    """
+    # Remove multi-line comments /* ... */
+    cleaned = re.sub(r"/\*[\s\S]*?\*/", " ", sql)
+    # Remove single-line comments -- ...
+    lines = []
+    for line in cleaned.splitlines():
+        line_no_comment = re.sub(r"--.*$", "", line)
+        lines.append(line_no_comment)
+    return "\n".join(lines).strip()
+
+
+def sanitize_and_prepare_sql(raw_sql: str) -> str:
+    """Validate query safety, expand shorthand, and verify read-only statement type."""
+    sql = raw_sql.strip()
+    if sql.endswith(";"):
+        sql = sql[:-1].strip()
+
+    # Get SQL stripped of comments to evaluate the effective query statement
+    effective_sql = strip_sql_comments(sql)
+    if not effective_sql:
+        raise ValueError("SQL query cannot be empty.")
+
+    # Check for multiple statements separated by semicolon
+    cleaned_no_quotes = re.sub(r"'[^']*'", "", effective_sql)
+    cleaned_no_quotes = re.sub(r'"[^"]*"', "", cleaned_no_quotes)
+    if ";" in cleaned_no_quotes:
+        raise ValueError("Multiple SQL statements separated by ';' are not permitted.")
+
+    # Check for disallowed keywords in comment-free and quote-free SQL
+    for pattern in DISALLOWED_SQL_PATTERNS:
+        m = re.search(pattern, cleaned_no_quotes, re.IGNORECASE)
+        if m:
+            raise ValueError(
+                f"Disallowed SQL keyword or operation detected: '{m.group(0).upper()}'. "
+                f"Only read-only queries (SELECT / WITH) are allowed."
+            )
+
+    # Shorthand support: "WHERE ..." expands to "SELECT * FROM target_summary WHERE ..."
+    if re.match(r"^WHERE\b", effective_sql, re.IGNORECASE):
+        sql = f"SELECT * FROM target_summary {sql}"
+        effective_sql = f"SELECT * FROM target_summary {effective_sql}"
+
+    # Must start with SELECT or WITH (ignoring any comments before it)
+    if not re.match(r"^(SELECT|WITH)\b", effective_sql, re.IGNORECASE):
+        raise ValueError("Query must begin with 'SELECT' or 'WITH'.")
+
+    return sql
+
+
+def optimize_cone_search(sql: str) -> str:
+    """
+    Detect CONE_SEARCH(ra, dec, c_ra, c_dec, radius_arcsec) in queries
+    and automatically inject a bounding-box range check to utilize the (ra, dec) index.
+    """
+    pattern = re.compile(
+        r"CONE_SEARCH\s*\(\s*([a-zA-Z0-9_\.]+)\s*,\s*([a-zA-Z0-9_\.]+)\s*,\s*([0-9\.\-\+]+)\s*,\s*([0-9\.\-\+]+)\s*,\s*([0-9\.\-\+]+)\s*\)",
+        re.IGNORECASE,
+    )
+
+    def _replacer(m):
+        ra_col = m.group(1)
+        dec_col = m.group(2)
+        try:
+            c_ra = float(m.group(3))
+            c_dec = float(m.group(4))
+            r_arcsec = float(m.group(5))
+        except ValueError:
+            return m.group(0)
+
+        r_deg = r_arcsec / 3600.0
+        d_dec = r_deg
+        cos_dec = max(0.01, math.cos(c_dec * math.pi / 180.0))
+        d_ra = r_deg / cos_dec
+
+        min_dec = max(-90.0, c_dec - d_dec)
+        max_dec = min(90.0, c_dec + d_dec)
+        min_ra = c_ra - d_ra
+        max_ra = c_ra + d_ra
+
+        if min_ra < 0:
+            ra_box = f"({ra_col} >= {min_ra + 360.0:.6f} OR {ra_col} <= {max_ra:.6f})"
+        elif max_ra > 360:
+            ra_box = f"({ra_col} >= {min_ra:.6f} OR {ra_col} <= {max_ra - 360.0:.6f})"
+        else:
+            ra_box = f"({ra_col} BETWEEN {min_ra:.6f} AND {max_ra:.6f})"
+
+        dec_box = f"({dec_col} BETWEEN {min_dec:.6f} AND {max_dec:.6f})"
+
+        return f"({ra_box} AND {dec_box} AND {m.group(0)})"
+
+    return pattern.sub(_replacer, sql)
+
+
+def wrap_query_with_target_summary(conn: sqlite3.Connection, sql: str) -> Tuple[str, List[str], bool]:
+    """
+    Wrap user query to ensure catId, objId, obCode, ra, dec, classificationName, bestRedshift, etc.
+    are always available for plotting and spectrum viewer.
+    Returns (executable_sql, user_custom_columns, has_identity).
+    """
+    tbl = get_summary_table(conn)
+    has_file_cols = check_db_file_columns(conn)
+
+    # Probe query structure with LIMIT 0
+    test_cur = conn.cursor()
+    test_sql = f"SELECT * FROM (\n{sql}\n) AS _probe LIMIT 0"
+    test_cur.execute(test_sql)
+    out_cols = [desc[0] for desc in test_cur.description] if test_cur.description else []
+
+    has_cat = "catId" in out_cols
+    has_obj = "objId" in out_cols
+
+    if not (has_cat and has_obj):
+        return sql, out_cols, False
+
+    # Check if core columns are already present in query output
+    core_cols = {"ra", "dec", "classificationName", "bestRedshift", "bestVelocity"}
+    missing_core = core_cols - set(out_cols)
+
+    # If all core columns are already projected, NO wrapping or joining is needed!
+    if not missing_core:
+        return sql, out_cols, True
+
+    # User query has catId/objId but is missing some core columns (e.g. from line_measurements)
+    # Project user_query.* first, then ONLY add missing core columns with no duplicate names!
+    extra_selects = []
+    if "ra" not in out_cols:
+        extra_selects.append("_ts.ra AS ra")
+    if "dec" not in out_cols:
+        extra_selects.append("_ts.dec AS dec")
+    if "obCode" not in out_cols:
+        extra_selects.append("COALESCE(_ts.obCode, '') AS obCode")
+    if "classificationName" not in out_cols:
+        extra_selects.append("COALESCE(_ts.classificationName, 'UNKNOWN') AS classificationName")
+    if "bestRedshift" not in out_cols:
+        extra_selects.append("_ts.bestRedshift AS bestRedshift")
+    if "bestVelocity" not in out_cols:
+        extra_selects.append("_ts.bestVelocity AS bestVelocity")
+    if has_file_cols:
+        if "has_fits" not in out_cols:
+            extra_selects.append("_ts.has_fits AS has_fits")
+        if "has_png" not in out_cols:
+            extra_selects.append("_ts.has_png AS has_png")
+
+    extra_str = (", " + ", ".join(extra_selects)) if extra_selects else ""
+
+    wrapped_sql = f"""
+        WITH _user_query AS (
+            {sql}
+        )
+        SELECT 
+            _user_query.*
+            {extra_str}
+        FROM _user_query
+        LEFT JOIN {tbl} _ts 
+          ON _ts.catId = _user_query.catId AND _ts.objId = _user_query.objId
+    """
+    return wrapped_sql, out_cols, True
+
+
+@app.get("/api/sql/schema")
+def get_database_schema():
+    """Retrieve database schema metadata including tables, columns, types, and descriptions."""
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') ORDER BY type, name")
+        tables_meta = []
+        for row in cur.fetchall():
+            tbl_name = row["name"]
+            tbl_type = row["type"]
+            if tbl_name.startswith("sqlite_"):
+                continue
+
+            cur.execute(f"PRAGMA table_info({tbl_name})")
+            columns = []
+            for col_row in cur.fetchall():
+                c_name = col_row["name"]
+                c_type = col_row["type"] or "TEXT"
+                is_pk = bool(col_row["pk"])
+                desc = KNOWN_COLUMN_DESCRIPTIONS.get(c_name, "")
+                columns.append({
+                    "name": c_name,
+                    "type": c_type,
+                    "pk": is_pk,
+                    "description": desc,
+                })
+
+            tables_meta.append({
+                "name": tbl_name,
+                "type": tbl_type,
+                "description": KNOWN_TABLE_DESCRIPTIONS.get(tbl_name, ""),
+                "columns": columns,
+            })
+
+        return {"tables": tables_meta}
+    finally:
+        conn.close()
+
+
+@app.post("/api/sql/validate")
+def validate_sql(req: SqlValidateRequest):
+    """Validate SQL syntax and safety without executing the full query."""
+    raw_query = req.get_sql()
+    if not raw_query:
+        return {"valid": False, "error": "Query is empty."}
+    try:
+        prepared_sql = sanitize_and_prepare_sql(raw_query)
+        optimized_sql = optimize_cone_search(prepared_sql)
+    except ValueError as e:
+        return {"valid": False, "error": str(e)}
+
+    conn = get_db()
+    set_query_timeout(conn, timeout_sec=3.0)
+    cur = conn.cursor()
+    try:
+        cur.execute(f"EXPLAIN QUERY PLAN {optimized_sql}")
+        plan_rows = [dict(r) for r in cur.fetchall()]
+        return {
+            "valid": True,
+            "message": "SQL syntax is valid.",
+            "query_plan": plan_rows,
+            "optimized_sql": optimized_sql,
+        }
+    except Exception as e:
+        return {
+            "valid": False,
+            "error": str(e),
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/sql/query")
+def execute_sql_query(req: SqlQueryRequest):
+    """Execute a custom SQL query with safety, pagination, auto-projection, and sky coordinates."""
+    t_start = time.time()
+    raw_query = req.get_sql()
+    if not raw_query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
+    try:
+        prepared_sql = sanitize_and_prepare_sql(raw_query)
+        optimized_sql = optimize_cone_search(prepared_sql)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    conn = get_db()
+    set_query_timeout(conn, timeout_sec=8.0)
+    cur = conn.cursor()
+    try:
+        # Wrap query with target_summary for identity auto-projection if applicable
+        try:
+            executable_sql, user_cols, has_identity = wrap_query_with_target_summary(conn, optimized_sql)
+        except Exception as wrap_err:
+            # If wrap failed (e.g. invalid column reference), try raw optimized sql
+            executable_sql = optimized_sql
+            user_cols = []
+            has_identity = False
+
+        # 1. Count total matching rows (strip trailing ORDER BY for high speed)
+        unordered_sql = strip_trailing_order_by(executable_sql)
+        count_sql = f"SELECT count(*) FROM (\n{unordered_sql}\n) AS _total_count"
+        try:
+            cur.execute(count_sql)
+            total = cur.fetchone()[0]
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Query Execution Error: {e}")
+
+        limit = max(1, min(100, req.limit))
+        page = max(1, req.page)
+        offset = (page - 1) * limit
+        pages = max(1, math.ceil(total / limit)) if total > 0 else 1
+
+        # 2. Fetch current page rows (with optional ORDER BY and explicit newline before LIMIT)
+        if req.sort_by:
+            clean_sort = re.sub(r"[^a-zA-Z0-9_.]", "", req.sort_by.strip())
+            if clean_sort:
+                sort_dir = "DESC" if (req.order or "").lower() == "desc" else "ASC"
+                page_sql = f"""SELECT * FROM (
+{unordered_sql}
+) AS _sorted_page
+ORDER BY "{clean_sort}" {sort_dir} NULLS LAST
+LIMIT ? OFFSET ?"""
+            else:
+                page_sql = f"{executable_sql}\nLIMIT ? OFFSET ?"
+        else:
+            page_sql = f"{executable_sql}\nLIMIT ? OFFSET ?"
+
+        try:
+            cur.execute(page_sql, (limit, offset))
+        except Exception as sort_err:
+            if req.sort_by:
+                # If sorting by this column fails (e.g. column not in output), fallback gracefully
+                print(f"Warning: Sort by {req.sort_by} failed ({sort_err}), falling back to default order")
+                page_sql = f"{executable_sql}\nLIMIT ? OFFSET ?"
+                cur.execute(page_sql, (limit, offset))
+            else:
+                raise
+        raw_rows = cur.fetchall()
+
+        # Format rows into JSON dictionaries
+        result_targets = []
+        for r in raw_rows:
+            d = dict(r)
+            clean_item = {}
+            for k, v in d.items():
+                clean_item[k] = sanitize_val(v)
+            if "catId" in clean_item and clean_item["catId"] is not None:
+                clean_item["catId"] = int(clean_item["catId"])
+            if "objId" in clean_item and clean_item["objId"] is not None:
+                clean_item["objId"] = str(clean_item["objId"])
+            result_targets.append(clean_item)
+
+        # 3. Extract sky positions for Celestial Map (up to 50,000 coordinates)
+        sky_targets = []
+        if has_identity and not req.skip_sky:
+            sky_sql = f"""
+                SELECT catId, objId, obCode, ra, dec, classificationName, bestRedshift, bestVelocity
+                FROM (\n{unordered_sql}\n) AS _sky_sub
+                WHERE ra IS NOT NULL AND dec IS NOT NULL
+                LIMIT 50000
+            """
+            try:
+                cur.execute(sky_sql)
+                for sr in cur.fetchall():
+                    sky_targets.append({
+                        "catId": sr["catId"],
+                        "objId": str(sr["objId"]),
+                        "obCode": sr["obCode"] or "",
+                        "ra": sanitize_val(sr["ra"]),
+                        "dec": sanitize_val(sr["dec"]),
+                        "classificationName": sr["classificationName"] or "UNKNOWN",
+                        "bestRedshift": sanitize_val(sr["bestRedshift"]),
+                        "bestVelocity": sanitize_val(sr["bestVelocity"]),
+                    })
+            except Exception as sky_err:
+                print(f"Warning: Sky coordinates extraction skipped: {sky_err}")
+
+        duration_ms = round((time.time() - t_start) * 1000.0, 1)
+
+        return {
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "pages": pages,
+            "duration_ms": duration_ms,
+            "execution_time_ms": duration_ms,
+            "has_identity": has_identity,
+            "user_columns": user_cols,
+            "columns": user_cols,
+            "targets": result_targets,
+            "sky_targets": sky_targets,
+        }
+    finally:
+        conn.close()
 
 
 # -----------------------------------------------------------------------------

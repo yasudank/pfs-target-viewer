@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PFS Target & Spectrum Viewer</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=2.0">
+  <link rel="stylesheet" href="/static/css/style.css?v=2.6">
   <style>
     th, .targets-table th, .detail-subtable th, .meta-label {
       text-transform: none !important;
@@ -45,98 +45,174 @@
   <!-- Main Container -->
   <main class="app-container">
 
-    <!-- Filter & Search Toolbar -->
+    <!-- Filter & Search Toolbar with Dual-Mode Tabs -->
     <section class="toolbar-section">
-      <div class="search-row">
-        <!-- Search Input -->
-        <div class="search-box">
-          <span class="search-icon">🔍</span>
-          <input type="text" id="searchInput" placeholder="Search by Target ID or obCode (e.g. rubin_0001, 170019...)" autocomplete="off">
-          <button id="clearSearchBtn" class="clear-btn" title="Clear search">&times;</button>
-        </div>
-
-        <!-- Classification Pills -->
-        <div class="filter-group">
-          <label class="group-label">Class:</label>
-          <div class="class-pills" id="classPills">
-            <button class="pill-btn active" data-class="ALL">All</button>
-            <button class="pill-btn pill-galaxy" data-class="GALAXY">Galaxy</button>
-            <button class="pill-btn pill-qso" data-class="QSO">QSO</button>
-            <button class="pill-btn pill-star" data-class="STAR">Star</button>
-          </div>
-        </div>
-
-        <!-- Catalog ID (catId) Filter -->
-        <div class="filter-group">
-          <label class="group-label">catId:</label>
-          <select id="catIdSelect" class="custom-select">
-            <option value="ALL">All Catalogs</option>
-          </select>
-        </div>
-
-        <!-- Redshift Range -->
-        <div class="filter-group z-range-group">
-          <label class="group-label">Redshift ($z$):</label>
-          <div class="z-inputs">
-            <input type="number" id="minZInput" placeholder="Min z" step="0.1" min="0" max="15">
-            <span class="range-sep">&ndash;</span>
-            <input type="number" id="maxZInput" placeholder="Max z" step="0.1" min="0" max="15">
-          </div>
-        </div>
-
-        <!-- Sort Control -->
-        <div class="filter-group">
-          <label class="group-label">Sort:</label>
-          <select id="sortBySelect" class="custom-select">
-            <option value="redshift" data-order="asc" selected>Redshift (Low &rarr; High)</option>
-            <option value="redshift" data-order="desc">Redshift (High &rarr; Low)</option>
-            <option value="velocity" data-order="desc">Velocity (High &rarr; Low)</option>
-            <option value="velocity" data-order="asc">Velocity (Low &rarr; High)</option>
-            <option value="objId" data-order="asc">Target ID (Asc)</option>
-            <option value="catId" data-order="asc">catId (Asc)</option>
-            <option value="catId" data-order="desc">catId (Desc)</option>
-            <option value="obCode" data-order="asc">obCode (A &rarr; Z)</option>
-            <option value="probaGalaxy" data-order="desc">P(Galaxy) (High &rarr; Low)</option>
-            <option value="probaQSO" data-order="desc">P(QSO) (High &rarr; Low)</option>
-            <option value="probaStar" data-order="desc">P(Star) (High &rarr; Low)</option>
-          </select>
-        </div>
-
-        <!-- Spectra Only Filter -->
-        <div class="filter-group">
-          <label class="spectra-toggle" title="Only show targets that have coadded spectra (FITS / PNG)">
-            <input type="checkbox" id="hasSpectraCheckbox">
-            <span>With Spectra</span>
-          </label>
-        </div>
-
-        <!-- Reset Button -->
-        <button id="resetFiltersBtn" class="btn btn-secondary" title="Reset all filters">
-          <span>↺ Reset</span>
+      <!-- Mode Tabs Header -->
+      <div class="filter-mode-tabs">
+        <button type="button" class="filter-tab-btn active" id="tabStandardFilter">
+          <span class="tab-icon">🎛️</span> Standard Filters
+        </button>
+        <button type="button" class="filter-tab-btn" id="tabSqlQuery">
+          <span class="tab-icon">⚡</span> Custom SQL Query <span class="badge badge-accent">Advanced</span>
         </button>
       </div>
-    </section>
 
-    <!-- Results Status Bar -->
-    <div class="results-bar">
-      <div class="results-info">
-        <span id="resultsCount">Loading targets...</span>
-        <div id="spatialFilterBadge" class="spatial-filter-badge" style="display: none;">
-          <span class="badge-icon">📍</span>
-          <span id="spatialFilterText" class="badge-text">RA: 120.0°–160.0°, Dec: -10.0°–+25.0°</span>
-          <button type="button" id="clearSpatialFilterBtn" class="btn-clear-spatial" title="Remove spatial filter and restore all coordinates">✕ Clear</button>
+      <!-- Mode 1: Standard GUI Filters Container -->
+      <div id="standardFilterContainer" class="standard-filter-container">
+        <div class="search-row">
+          <!-- Search Input -->
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="searchInput" placeholder="Search by Target ID or obCode (e.g. rubin_0001, 170019...)" autocomplete="off">
+            <button id="clearSearchBtn" class="clear-btn" title="Clear search">&times;</button>
+          </div>
+
+          <!-- Classification Pills -->
+          <div class="filter-group">
+            <label class="group-label">Class:</label>
+            <div class="class-pills" id="classPills">
+              <button class="pill-btn active" data-class="ALL">All</button>
+              <button class="pill-btn pill-galaxy" data-class="GALAXY">Galaxy</button>
+              <button class="pill-btn pill-qso" data-class="QSO">QSO</button>
+              <button class="pill-btn pill-star" data-class="STAR">Star</button>
+            </div>
+          </div>
+
+          <!-- Catalog ID (catId) Filter -->
+          <div class="filter-group">
+            <label class="group-label">catId:</label>
+            <select id="catIdSelect" class="custom-select">
+              <option value="ALL">All Catalogs</option>
+            </select>
+          </div>
+
+          <!-- Redshift Range -->
+          <div class="filter-group z-range-group">
+            <label class="group-label">Redshift ($z$):</label>
+            <div class="z-inputs">
+              <input type="number" id="minZInput" placeholder="Min z" step="0.1" min="0" max="15">
+              <span class="range-sep">&ndash;</span>
+              <input type="number" id="maxZInput" placeholder="Max z" step="0.1" min="0" max="15">
+            </div>
+          </div>
+
+          <!-- Sort Control -->
+          <div class="filter-group">
+            <label class="group-label">Sort:</label>
+            <select id="sortBySelect" class="custom-select">
+              <option value="redshift" data-order="asc" selected>Redshift (Low &rarr; High)</option>
+              <option value="redshift" data-order="desc">Redshift (High &rarr; Low)</option>
+              <option value="velocity" data-order="desc">Velocity (High &rarr; Low)</option>
+              <option value="velocity" data-order="asc">Velocity (Low &rarr; High)</option>
+              <option value="objId" data-order="asc">Target ID (Asc)</option>
+              <option value="catId" data-order="asc">catId (Asc)</option>
+              <option value="catId" data-order="desc">catId (Desc)</option>
+              <option value="obCode" data-order="asc">obCode (A &rarr; Z)</option>
+              <option value="probaGalaxy" data-order="desc">P(Galaxy) (High &rarr; Low)</option>
+              <option value="probaQSO" data-order="desc">P(QSO) (High &rarr; Low)</option>
+              <option value="probaStar" data-order="desc">P(Star) (High &rarr; Low)</option>
+            </select>
+          </div>
+
+          <!-- Spectra Only Filter -->
+          <div class="filter-group">
+            <label class="spectra-toggle" title="Only show targets that have coadded spectra (FITS / PNG)">
+              <input type="checkbox" id="hasSpectraCheckbox">
+              <span>With Spectra</span>
+            </label>
+          </div>
+
+          <!-- Reset Button -->
+          <button id="resetFiltersBtn" class="btn btn-secondary" title="Reset all filters">
+            <span>↺ Reset</span>
+          </button>
         </div>
       </div>
-      <div class="page-size-selector">
-        <label for="pageSizeSelect">Show:</label>
-        <select id="pageSizeSelect" class="custom-select select-sm">
-          <option value="10">10</option>
-          <option value="25" selected>25</option>
-          <option value="50">50</option>
-          <option value="100">100</option>
-        </select>
+
+      <!-- Mode 2: Custom SQL Query Container -->
+      <div id="sqlFilterContainer" class="sql-filter-container" style="display: none;">
+        <div class="sql-workspace">
+          <!-- Left: SQL Editor & Controls -->
+          <div class="sql-editor-pane">
+            <div class="sql-toolbar">
+              <div class="sql-toolbar-left">
+                <span class="sql-toolbar-title">📝 SQL Query Editor</span>
+                <span class="sql-hint">Supports full SQLite SELECT &amp; CONE_SEARCH</span>
+              </div>
+              <div class="sql-toolbar-right">
+                <!-- Preset Templates Dropdown -->
+                <div class="sql-template-select-wrapper">
+                  <label for="sqlTemplateSelect">Template:</label>
+                  <select id="sqlTemplateSelect" class="custom-select select-sm">
+                    <option value="">-- Choose Template --</option>
+                    <option value="cone_search">🔭 Cone Search (within 60 arcsec)</option>
+                    <option value="cone_fov">🌐 PFS FoV Search (within 0.7 deg)</option>
+                    <option value="oii_emitters">✨ Measured Spectral Lines (Cone 0.2 deg Join)</option>
+                    <option value="high_z_qso">🌌 High-Redshift QSOs (z &gt; 3.0)</option>
+                    <option value="boundary_class">⚖️ Ambiguous Galaxy/Star Class (0.4 &le; P &le; 0.6)</option>
+                    <option value="solver_warnings">⚠️ Redshift Solver Warnings</option>
+                    <option value="spectra_only">📊 Science Targets with FITS Spectra</option>
+                  </select>
+                </div>
+                <button type="button" id="clearSqlBtn" class="btn btn-sm btn-secondary" title="Clear query editor">🧹 Clear</button>
+              </div>
+            </div>
+
+            <!-- SQL Textarea / Editor -->
+            <div class="sql-editor-wrapper">
+              <textarea id="sqlQueryInput" class="sql-textarea" rows="6" spellcheck="false" placeholder="-- Enter SQL query or choose template above...">SELECT *
+FROM target_summary
+WHERE classificationName = 'QSO' AND bestRedshift > 2.0
+ORDER BY bestRedshift DESC</textarea>
+            </div>
+
+            <!-- Actions & Status Row -->
+            <div class="sql-actions-row">
+              <div class="sql-actions-left">
+                <button type="button" id="runSqlQueryBtn" class="btn btn-primary btn-run-sql" title="Run Query (Ctrl + Enter)">
+                  <span class="btn-icon">▶</span> Run Query <span class="shortcut-badge">Ctrl+Enter</span>
+                </button>
+                <button type="button" id="validateSqlBtn" class="btn btn-secondary" title="Validate SQL syntax without full execution">
+                  🔍 Validate Syntax
+                </button>
+                <button type="button" id="toggleSchemaBtn" class="btn btn-secondary" title="Toggle Schema Explorer">
+                  📚 Schema Explorer
+                </button>
+              </div>
+              <div class="sql-status-feedback" id="sqlStatusFeedback">
+                <span class="status-indicator ready">Ready (Type query or pick template)</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Interactive Schema Explorer -->
+          <div class="sql-schema-pane" id="sqlSchemaPane">
+            <div class="schema-header">
+              <div class="schema-title-row">
+                <div class="schema-title-group">
+                  <span class="schema-icon">📚</span>
+                  <span class="schema-heading">Schema Explorer</span>
+                  <span class="schema-total-badge" id="schemaTableCountBadge">8 tables</span>
+                </div>
+                <div class="schema-header-actions">
+                  <button type="button" id="schemaExpandAllBtn" class="btn-schema-tool" title="Expand all tables">➕ Expand</button>
+                  <button type="button" id="schemaCollapseAllBtn" class="btn-schema-tool" title="Collapse all tables">➖ Collapse</button>
+                </div>
+              </div>
+              <div class="schema-search-box">
+                <input type="text" id="schemaSearchInput" placeholder="Filter tables or columns..." class="schema-search-input">
+              </div>
+            </div>
+            <div class="schema-tree" id="schemaTree">
+              <div class="schema-loading">Loading database schema...</div>
+            </div>
+            <div class="schema-footer-hint">
+              💡 Click any column to insert into query
+            </div>
+          </div>
+        </div>
       </div>
-    </div>
+    </section>
 
     <!-- Sky Map Section -->
     <section class="sky-map-card" id="skyMapCard">
@@ -208,6 +284,55 @@
       </div>
     </section>
 
+    <!-- Results Status Bar -->
+    <div class="results-bar">
+      <div class="results-info">
+        <span id="resultsCount">Loading targets...</span>
+        <div id="spatialFilterBadge" class="spatial-filter-badge" style="display: none;">
+          <span class="badge-icon">📍</span>
+          <span id="spatialFilterText" class="badge-text">RA: 120.0°–160.0°, Dec: -10.0°–+25.0°</span>
+          <button type="button" id="clearSpatialFilterBtn" class="btn-clear-spatial" title="Remove spatial filter and restore all coordinates">✕ Clear</button>
+        </div>
+        <div id="sqlFilterBadge" class="sql-filter-badge" style="display: none;">
+          <span class="badge-icon">⚡</span>
+          <span id="sqlFilterText" class="badge-text">SQL Query Active</span>
+          <button type="button" id="clearSqlFilterBadgeBtn" class="btn-clear-spatial" title="Clear SQL query filter and return to standard filters">✕ Exit SQL</button>
+        </div>
+      </div>
+      <div class="results-actions">
+        <!-- Column Visibility Toggle Dropdown -->
+        <div class="column-visibility-dropdown" id="columnVisibilityDropdown">
+          <button type="button" class="btn btn-sm btn-outline column-toggle-btn" id="columnToggleBtn" title="Toggle visible columns">
+            <span>⚙️ Columns</span>
+            <span class="column-count-badge" id="columnCountBadge">7/7</span>
+          </button>
+          <div class="column-dropdown-menu" id="columnDropdownMenu" style="display: none;">
+            <div class="column-dropdown-header">
+              <span class="column-dropdown-title">Display Columns</span>
+              <div class="column-dropdown-tools">
+                <button type="button" class="btn-link-tool" id="colSelectAllBtn" title="Show all columns">All</button>
+                <span class="sep">&bull;</span>
+                <button type="button" class="btn-link-tool" id="colResetDefaultBtn" title="Reset to default columns">Reset</button>
+              </div>
+            </div>
+            <div class="column-dropdown-list" id="columnDropdownList">
+              <!-- Dynamically populated column checkboxes -->
+            </div>
+          </div>
+        </div>
+
+        <div class="page-size-selector">
+          <label for="pageSizeSelect">Show:</label>
+          <select id="pageSizeSelect" class="custom-select select-sm">
+            <option value="10">10</option>
+            <option value="25" selected>25</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
     <!-- Target Cards / Table Section -->
     <section class="table-container">
       <div id="loadingOverlay" class="loading-overlay">
@@ -215,22 +340,56 @@
         <p>Fetching target data...</p>
       </div>
 
-      <table class="targets-table" id="targetsTable">
-        <thead>
-          <tr>
-            <th class="col-thumb">Spectrum</th>
-            <th class="col-target">Target ID &amp; obCode</th>
-            <th class="col-coords">Coordinates</th>
-            <th class="col-class">Classification</th>
-            <th class="col-z">Best Redshift / Velocity</th>
-            <th class="col-subclass">SubClass</th>
-            <th class="col-actions">Actions</th>
-          </tr>
-        </thead>
-        <tbody id="targetsTbody">
-          <!-- Populated by JavaScript -->
-        </tbody>
-      </table>
+      <div class="table-scroll-wrapper" id="tableScrollWrapper">
+        <table class="targets-table" id="targetsTable">
+          <thead>
+            <tr>
+              <th class="col-thumb" data-col="thumb">Spectrum</th>
+              <th class="col-actions" data-col="actions">Details</th>
+              <th class="col-target sortable-th" data-col="target" data-sort="objId" title="Click to sort by Target ID">
+                <div class="th-sort-wrapper">
+                  <span>Target ID &amp; obCode</span>
+                  <span class="sort-icon">↕</span>
+                </div>
+              </th>
+              <th class="col-coords" data-col="coords">
+                <div class="coord-th-container">
+                  <span class="coord-th-title">Coordinates</span>
+                  <span class="coord-sort-btns">
+                    <button type="button" class="btn-coord-sort" data-sort-coord="ra" title="Sort by Right Ascension (RA)">
+                      RA <span class="sort-icon">↕</span>
+                    </button>
+                    <button type="button" class="btn-coord-sort" data-sort-coord="dec" title="Sort by Declination (Dec)">
+                      Dec <span class="sort-icon">↕</span>
+                    </button>
+                  </span>
+                </div>
+              </th>
+              <th class="col-class sortable-th" data-col="class" data-sort="classificationName" title="Click to sort by Classification">
+                <div class="th-sort-wrapper">
+                  <span>Classification</span>
+                  <span class="sort-icon">↕</span>
+                </div>
+              </th>
+              <th class="col-z sortable-th" data-col="redshift" data-sort="bestRedshift" title="Click to sort by Redshift / Velocity">
+                <div class="th-sort-wrapper">
+                  <span>Best Redshift / Velocity</span>
+                  <span class="sort-icon">↕</span>
+                </div>
+              </th>
+              <th class="col-subclass sortable-th" data-col="subclass" data-sort="bestSubClass" title="Click to sort by SubClass">
+                <div class="th-sort-wrapper">
+                  <span>SubClass</span>
+                  <span class="sort-icon">↕</span>
+                </div>
+              </th>
+            </tr>
+          </thead>
+          <tbody id="targetsTbody">
+            <!-- Populated by JavaScript -->
+          </tbody>
+        </table>
+      </div>
 
       <!-- Empty State -->
       <div id="emptyState" class="empty-state" style="display: none;">
@@ -605,6 +764,6 @@
   </div>
 
   <!-- Client-side script -->
-  <script src="/static/js/app.js?v=2.0"></script>
+  <script src="/static/js/app.js?v=2.9"></script>
 </body>
 </html>

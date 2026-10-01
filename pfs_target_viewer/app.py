@@ -18,6 +18,7 @@ import re
 import threading
 import urllib.request
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
 from pydantic import BaseModel
@@ -72,6 +73,18 @@ def resolve_paths(
         candidate_data_dir = os.path.join(parent_dir, "extracted_targets")
     else:
         candidate_db = os.path.join(resolved_base, "pfs_metadata.sqlite3")
+        # Check if candidate_db exists; if not, check common alternative database names
+        if not os.path.exists(candidate_db):
+            for alt_name in ["pfs_targets.db", "pfs_catalog.db", "targets.sqlite3", "metadata.sqlite3"]:
+                alt_path = os.path.join(resolved_base, alt_name)
+                if os.path.exists(alt_path):
+                    candidate_db = alt_path
+                    break
+            else:
+                db_files = [f for f in glob.glob(os.path.join(resolved_base, "*.sqlite3")) if not os.path.basename(f).startswith(".")]
+                if db_files:
+                    candidate_db = sorted(db_files)[0]
+
         # Check if resolved_base directly contains extracted_targets or is extracted_targets itself
         if os.path.isdir(os.path.join(resolved_base, "extracted_targets")):
             candidate_data_dir = os.path.join(resolved_base, "extracted_targets")
@@ -190,7 +203,8 @@ def configure_paths(
     data_dir: Optional[str] = None,
 ):
     """Configure global path variables, cache directories, and build file index."""
-    global DB_PATH, DATA_DIR, FITS_DIR, PNG_DIR, CUTOUT_CACHE_DIR, _FILES_INDEXED
+    global DB_PATH, DATA_DIR, FITS_DIR, PNG_DIR, CUTOUT_CACHE_DIR, _FILES_INDEXED, _DB_HAS_FILE_COLS
+    old_db = DB_PATH
     DB_PATH, DATA_DIR = resolve_paths(target_dir=target_dir, db_path=db_path, data_dir=data_dir)
     FITS_DIR = os.path.join(DATA_DIR, "fits")
     PNG_DIR = os.path.join(DATA_DIR, "png")
@@ -201,17 +215,42 @@ def configure_paths(
         except OSError:
             pass
     _FILES_INDEXED = False
+    _DB_HAS_FILE_COLS = None
     index_extracted_files()
     cleanup_blank_cutout_cache()
+
+    # Clear query cache and pre-warm master sky cache when switching datasets
+    if old_db and old_db != DB_PATH:
+        if "SQL_CACHE" in globals() and SQL_CACHE is not None:
+            SQL_CACHE.clear()
+        if "load_or_build_master_sky_cache" in globals() and os.path.exists(DB_PATH):
+            threading.Thread(
+                target=load_or_build_master_sky_cache,
+                kwargs={"force": True, "db_path": DB_PATH},
+                daemon=True,
+            ).start()
 
 
 # Initialize defaults
 configure_paths()
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Pre-warm master sky cache in background thread when server starts
+    if os.path.exists(DB_PATH):
+        threading.Thread(
+            target=load_or_build_master_sky_cache,
+            kwargs={"db_path": DB_PATH},
+            daemon=True,
+        ).start()
+    yield
+
+
 app = FastAPI(
     title="PFS Target & Spectrum Viewer",
     description="Interactive Web Dashboard for PFS Targets & Coadded Spectra",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -415,55 +454,82 @@ def sanitize_val(v: Any) -> Any:
 # -----------------------------------------------------------------------------
 # Precomputed Full-Sky Celestial Coordinates In-Memory & Disk Cache
 # -----------------------------------------------------------------------------
+_CURRENT_CACHED_DB_PATH: Optional[str] = None
 _MASTER_SKY_LOCK = threading.Lock()
 _MASTER_SKY_GZIP_BYTES: Optional[bytes] = None
 _MASTER_SKY_JSON_BYTES: Optional[bytes] = None
 _MASTER_SKY_ETAG: Optional[str] = None
 
 
-def get_sky_cache_file_path() -> str:
-    """Return path to persistent disk cache for full sky celestial coordinates."""
-    base_dir = os.path.dirname(DB_PATH) if DB_PATH else DEFAULT_BASE_DATA_DIR
-    return os.path.join(base_dir, ".sky_positions_cache.json.gz")
+def get_sky_cache_file_path(db_path: Optional[str] = None) -> str:
+    """Return path to persistent disk cache for full sky celestial coordinates for given database."""
+    target_db = db_path or DB_PATH
+    if not target_db:
+        base_dir = DEFAULT_BASE_DATA_DIR
+        prefix = "pfs_metadata"
+    else:
+        base_dir = os.path.dirname(os.path.abspath(target_db))
+        base_name = os.path.splitext(os.path.basename(target_db))[0]
+        prefix = base_name
+    return os.path.join(base_dir, f".{prefix}_sky_cache.json.gz")
 
 
-def load_or_build_master_sky_cache(force: bool = False) -> Tuple[Optional[bytes], Optional[bytes], Optional[str]]:
+def load_or_build_master_sky_cache(force: bool = False, db_path: Optional[str] = None) -> Tuple[Optional[bytes], Optional[bytes], Optional[str]]:
     """
-    Ensure the full celestial sky coordinates are cached in memory (both gzip and raw json bytes).
-    1. Loads from persistent .sky_positions_cache.json.gz on disk in ~2ms if it exists and is newer than database.
-    2. Otherwise queries SQLite database, builds coordinates, serializes, compresses, and saves disk cache.
+    Ensure the full celestial sky coordinates are cached in memory (both gzip and raw json bytes)
+    for the currently active database (DB_PATH or specified db_path).
+    1. Loads from persistent .{dbname}_sky_cache.json.gz (or legacy .sky_positions_cache.json.gz) in ~2ms.
+    2. Otherwise queries the active SQLite database, serializes, compresses, and saves disk cache.
     """
-    global _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG
+    global _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG, _CURRENT_CACHED_DB_PATH
+
+    active_db = os.path.abspath(db_path or DB_PATH) if (db_path or DB_PATH) else ""
+    if not active_db or not os.path.exists(active_db):
+        return None, None, None
+
+    # If active database changed since last cache load, force reload!
+    if _CURRENT_CACHED_DB_PATH != active_db:
+        force = True
+
     if not force and _MASTER_SKY_GZIP_BYTES is not None and _MASTER_SKY_JSON_BYTES is not None:
         return _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG
 
     with _MASTER_SKY_LOCK:
+        if _CURRENT_CACHED_DB_PATH != active_db:
+            force = True
+
         if not force and _MASTER_SKY_GZIP_BYTES is not None and _MASTER_SKY_JSON_BYTES is not None:
             return _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG
 
-        cache_file = get_sky_cache_file_path()
-        db_mtime = os.path.getmtime(DB_PATH) if os.path.exists(DB_PATH) else 0
+        cache_file = get_sky_cache_file_path(active_db)
+        legacy_cache_file = os.path.join(os.path.dirname(active_db), ".sky_positions_cache.json.gz")
+        chosen_cache_file = cache_file if os.path.exists(cache_file) else (legacy_cache_file if os.path.exists(legacy_cache_file) else cache_file)
+
+        db_mtime = os.path.getmtime(active_db)
 
         # 1. Try reading from disk cache if valid and newer than database
-        if not force and os.path.exists(cache_file) and os.path.getmtime(cache_file) >= db_mtime:
+        if not force and os.path.exists(chosen_cache_file) and os.path.getmtime(chosen_cache_file) >= db_mtime:
             try:
                 t0 = time.time()
-                with open(cache_file, "rb") as f:
+                with open(chosen_cache_file, "rb") as f:
                     gz_data = f.read()
                 raw_data = gzip.decompress(gz_data)
                 etag = f'W/"sky-{len(gz_data)}-{int(db_mtime)}"'
                 _MASTER_SKY_GZIP_BYTES = gz_data
                 _MASTER_SKY_JSON_BYTES = raw_data
                 _MASTER_SKY_ETAG = etag
-                print(f"  ⚡ Loaded master sky coordinates cache ({len(gz_data)/1024/1024:.2f} MB gzip) in {(time.time()-t0)*1000:.1f} ms")
+                _CURRENT_CACHED_DB_PATH = active_db
+                print(f"  ⚡ Loaded master sky coordinates cache ({len(gz_data)/1024/1024:.2f} MB gzip) for {active_db} in {(time.time()-t0)*1000:.1f} ms")
                 return _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG
             except Exception as e:
                 print(f"Warning: Failed reading sky disk cache: {e}. Rebuilding from database...")
 
-        # 2. Build from SQLite database
+        # 2. Build from active SQLite database
         try:
             t0 = time.time()
-            conn = get_db()
+            conn = sqlite3.connect(f"file:{active_db}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            register_sql_functions(conn)
             cur = conn.cursor()
             tbl = get_summary_table(conn)
             has_file_cols = check_db_file_columns(conn)
@@ -501,6 +567,7 @@ def load_or_build_master_sky_cache(force: bool = False) -> Tuple[Optional[bytes]
             _MASTER_SKY_GZIP_BYTES = gz_bytes
             _MASTER_SKY_JSON_BYTES = raw_bytes
             _MASTER_SKY_ETAG = etag
+            _CURRENT_CACHED_DB_PATH = active_db
 
             try:
                 with open(cache_file, "wb") as f:
@@ -508,15 +575,11 @@ def load_or_build_master_sky_cache(force: bool = False) -> Tuple[Optional[bytes]
             except Exception as e:
                 print(f"Warning: Could not save sky disk cache: {e}")
 
-            print(f"  ⚡ Built master sky coordinates cache ({len(results):,} targets, {len(gz_bytes)/1024/1024:.2f} MB gzip) in {time.time()-t0:.2f}s")
+            print(f"  ⚡ Built master sky coordinates cache ({len(results):,} targets, {len(gz_bytes)/1024/1024:.2f} MB gzip) for {active_db} in {time.time()-t0:.2f}s")
             return _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG
         except Exception as e:
-            print(f"Error building master sky coordinates cache: {e}")
+            print(f"Error building master sky coordinates cache for {active_db}: {e}")
             return None, None, None
-
-
-# Pre-warm master sky cache in background thread at process startup
-threading.Thread(target=load_or_build_master_sky_cache, daemon=True).start()
 
 
 # -----------------------------------------------------------------------------
@@ -814,7 +877,7 @@ def get_sky_positions(
         and (limit is None or limit >= 210000)
     )
     if is_unfiltered:
-        gz_data, raw_data, etag = load_or_build_master_sky_cache()
+        gz_data, raw_data, etag = load_or_build_master_sky_cache(db_path=DB_PATH)
         if etag and request.headers.get("if-none-match") == etag:
             return Response(status_code=304)
 

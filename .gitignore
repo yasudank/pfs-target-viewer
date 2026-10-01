@@ -5,6 +5,8 @@ pfs_metadata.sqlite3
 gen3.sqlite3
 extracted_targets/
 .sky_positions_cache.json.gz
+.*_sky_cache.json.gz
+*.sky_cache.json.gz
 
 # Python Virtual Environments
 .venv/

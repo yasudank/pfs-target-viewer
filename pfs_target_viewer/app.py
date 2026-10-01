@@ -694,7 +694,7 @@ def get_sky_positions(
     max_dec: Optional[float] = Query(None, description="Maximum Declination (deg)"),
     has_fits: Optional[bool] = Query(None, description="Filter targets that have FITS spectra"),
     has_png: Optional[bool] = Query(None, description="Filter targets that have PNG spectra"),
-    limit: int = Query(250000, description="Max coordinates to return"),
+    limit: int = Query(500000, description="Max coordinates to return"),
 ):
     """Retrieve lightweight celestial coordinates for all filtered targets (for full sky map display)."""
     where_clauses = ["t.ra IS NOT NULL", "t.dec IS NOT NULL"]
@@ -1698,7 +1698,7 @@ def execute_sql_query(req: SqlQueryRequest):
                 clean_item["objId"] = str(clean_item["objId"])
             all_clean_rows.append(clean_item)
 
-            if has_identity and len(sky_targets) < 50000 and not req.skip_sky:
+            if has_identity and not req.skip_sky:
                 ra_val = clean_item.get("ra")
                 dec_val = clean_item.get("dec")
                 if ra_val is not None and dec_val is not None:

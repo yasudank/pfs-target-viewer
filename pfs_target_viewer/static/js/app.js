@@ -602,13 +602,11 @@ async function runSqlQuery(page = 1, skipSky = false, forceRefresh = false) {
     const cacheMsg = data.cached ? " (⚡ cached from server memory)" : "";
     setSqlFeedback("success", `✓ Query completed in ${data.execution_time_ms} ms${cacheMsg} (${data.total.toLocaleString()} rows found)`);
 
-    // Update Sky Map coordinates with returned sky_targets
-    if (data.sky_targets) {
+    // Update Sky Map coordinates with returned sky_targets only when new coordinates provided
+    if (data.sky_targets && data.sky_targets.length > 0) {
       state.allSkyTargets = data.sky_targets;
-      if (state.skyScope === "all") {
-        renderSkyMap(state.targets);
-      }
     }
+    renderSkyMap(state.targets);
 
     updateTableHeaders();
     renderTargetsTable(data.targets);
@@ -1993,7 +1991,7 @@ async function fetchAllSkyPositions() {
   }
 
   // Request all celestial coordinates with full attributes once (unconditional)
-  const params = new URLSearchParams({ limit: 250000 });
+  const params = new URLSearchParams({ limit: 500000 });
 
   try {
     const res = await fetch(`/api/targets/sky_positions?${params.toString()}`);

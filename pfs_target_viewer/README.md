@@ -4,43 +4,58 @@ Subaru Prime Focus Spectrograph (PFS) のコアッド観測メタデータ（`pf
 
 ---
 
-## 主な特徴
+## Key Features & Highlights
 
-- 🚀 **PFS パイプライン非依存 (Pipeline-Free)**
-  - `lsst-scipipe` や `pfs_pipe2d` 等の重厚な専用環境を一切必要とせず、標準的な Python 3.10+ 環境（`astropy`, `fastapi`, `uvicorn`, `numpy` のみ）で完全に動作します。
-  - 任意のマシン（個人のラップトップ、解析ワークステーション、クラウドサーバー等）へフォルダごとコピーして即座に同じ環境を再現できます。
-- 🔍 **Search, Filter & High-Performance Pagination**
-  - Instant search by `obCode` (substring) or `objId` (64-bit ID exact match).
-  - Catalog ID (`catId`) dropdown filtering with dynamic target count badges.
-  - Target classification filter pills (`GALAXY`, `QSO`, `STAR`).
+- 🚀 **Pipeline-Free & Large Dataset Scalability**
+  - Runs completely independently of heavy pipeline environments (`lsst-scipipe`, `pfs_pipe2d`) on standard Python 3.10+ (`fastapi`, `uvicorn`, `astropy`, `numpy`).
+  - Native support for large-scale datasets (200,000+ targets) and directory sharding (`fits/NNN/`, `png/NNN/`).
+  - Seamlessly portable across laptops, workstations, and servers.
+- 🔍 **Search, Filter & Server-Side Query Caching**
+  - **Full-Dataset Instant Sorting**: Server-side in-memory query caching (`SQL_CACHE`) allows instant sorting by Redshift, Velocity ($v = c \cdot z$), Target ID, `catId`, or classification probabilities across all matching records (200,000+ targets) in sub-milliseconds.
+  - Real-time search by `obCode` (substring) or 64-bit `objId` (exact match).
+  - Catalog ID (`catId`) dropdown with live target count badges.
+  - Classification filter pills (`ALL`, `GALAXY`, `QSO`, `STAR`).
   - Redshift range filtering ($z_{min} \le z \le z_{max}$, e.g. $z \ge 6.0$).
-  - Multi-column sorting by Redshift, Target ID, `catId`, or classification probabilities.
-  - 13,000 件以上の天体をスムーズに閲覧できる高速ページネーション（10 / 25 / 50 / 100 件切替）
-- 🌌 **Celestial Sky Distribution (RA / Dec)**
-  - Dual-scope celestial map toggle: `📄 Page` (current table page targets) vs. `🌐 All Filtered` (all matching targets across survey, up to tens of thousands).
-  - High-performance WebGL rendering (`scattergl`) for full survey distribution, with prominent "Current Page Focus" overlay rings highlighting the active table page.
-  - Astronomical coordinate convention with reversed RA axis (`autorange: 'reversed'`).
-  - Interactive zooming, panning, reset controls, and collapsible card toggle.
-  - Clicking any target marker instantly launches the PNG spectrum quick-look, with seamless one-click transition to the interactive viewer with preserved estimated redshift.
+  - "With Spectra" checkbox to quickly filter targets with extracted FITS/PNG.
+  - Column customizer to dynamically show/hide table columns.
+  - Fast pagination (10, 25, 50, 100 per page).
+- 🌌 **Mollweide All-Sky Celestial Map & Spatial Viewport Filtering**
+  - Fixed 2:1 aspect ratio Mollweide all-sky projection with East-to-left astronomical convention.
+  - **Central Meridian (RA) Rotation**: Interactive slider ($0^\circ \sim 360^\circ$) and quick presets ($0^\circ, 60^\circ, 120^\circ, 180^\circ, 240^\circ, 300^\circ$) to center any sky area.
+  - **"Filter Table by View"**: Zoom/pan to any sky field and click to spatially filter table targets to the visible celestial bounding box with an on-map overlay.
+  - **Dual Scope & Focus Rings**: Toggle between `📄 Page` and `🌐 All Filtered` (full 200k+ survey rendered via WebGL `scattergl` with active page targets highlighted by white focus rings).
+  - **Dataset-Tied Fast Coordinates Cache**: Automatically saves and loads compressed coordinate cache (`.{dbname}_sky_cache.json.gz`) in the dataset's directory, enabling sub-2ms startup and zero-lag HTTP ETag (304) / GZip transfer.
+- 💻 **Advanced SQL Query Mode & Schema Explorer**
+  - Dedicated SQL Query Editor tab alongside standard filters.
+  - Interactive Schema Explorer showing tables, views, column types, and row counts.
+  - **Custom Astronomical SQL Functions**:
+    - `CONE_SEARCH(ra, dec, center_ra, center_dec, radius_arcsec)`: Circular cone search
+    - `BOX_SEARCH(ra, dec, ra_min, ra_max, dec_min, dec_max)`: Rectangular boundary search
+    - Math functions: `SQRT`, `POW`, `COS`, `SIN`, `RADIANS`, `DEGREES`, `LOG10`, `LN`, `EXP` directly inside queries.
+  - Astronomical SQL presets for one-click query composition.
+  - Dynamic table column mapping: Any custom column selected in SQL (e.g. `ts.combination`, `lm.lineFlux`) is rendered as a dedicated column.
+- 🌌 **Multi-Wavelength Optical Cutout Viewer (HSC & Pan-STARRS)**
+  - Automatically fetches and displays 3-color optical cutouts from Hyper Suprime-Cam (HSC) SSP.
+  - Intelligent fallback: Automatically detects missing HSC coverage or blank/white dummy frames and falls back to Pan-STARRS1 (PS1) color cutouts.
 - 🖼️ **PNG Spectrum Quick-Look & Sequential Browsing**
   - Instant high-res spectrum modal launched from table thumbnails or celestial map markers.
-  - Seamless target browsing without closing the modal via header/footer buttons and floating arrow buttons (`❮` / `❯`).
-  - Keyboard arrow key navigation (`←` / `→` keys) for effortless slide-through inspection.
-  - Automatic pagination advancing when navigating past page boundaries.
-  - Synchronized table row highlighting as you navigate between targets.
-  - One-click transition to the interactive Plotly spectrum viewer with preserved estimated redshift.
-- 📊 **詳細パラメータの深層閲覧 (Deep Inspection)**
-  - ソルバーエラー・警告フラグ (`solver_results`)
-  - 赤方偏移候補一覧 (`redshift_candidates`: 各モデルの $z$, 確率, reduced $\chi^2$, 残差等)
-  - 輝線・吸収線測定値 (`line_measurements`: 検出波長, フラックス, 等価幅 EW, $\sigma$ 等)
-- 📈 **インタラクティブ FITS スペクトルビューア (Plotly.js)**
-  - `pfsObject` FITS ファイルの生データをブラウザ上でインタラクティブに可視化（ズーム、パン、正確な波長・フラックスのホバー表示）
-  - クライアントサイドでの動的ビン幅調整（Raw, 0.2 nm, 0.5 nm, 1.0 nm, 2.0 nm）
-  - 1$\sigma$ ノイズ帯およびバッドピクセルの表示トグル
-  - 主要な輝線・吸収線（Lyα, C IV, Mg II, [O II], Ca II H/K, Hβ, [O III], Hα など）のオーバーレイ表示
-  - **リアルタイム Redshift スライダー**: スライダーを動かすと輝線/吸収線の位置がリアルタイムに追従し、目視での赤方偏移の確認・検証が可能
-  - 個別露出観測リスト（Visit, Arm, Spectrograph, 露出時間）の表示
-  - FITS 生ファイルおよび PNG 画像の直接ダウンロード
+  - Slide through targets effortlessly with keyboard arrow keys (`←` / `→`) or floating navigation buttons (`❮` / `❯`) without closing the modal.
+  - Automatic pagination advance when navigating past page boundaries.
+  - Synchronized table row highlighting and one-click jump to the interactive Plotly viewer with preserved redshift.
+- 📊 **Deep Parameter Inspection (`📋 Details`)**
+  - Solver status, warnings, and error flags (`solver_results`).
+  - Model candidate rankings (`redshift_candidates`: Rank, $z$, error, proba, reduced $\chi^2$, $p$-value, template).
+  - Detected line measurements (`line_measurements`: Line name, rest wavelength, $z$, flux, EW, $\sigma$).
+- 📈 **Interactive FITS Spectrum Viewer (`📈 Plot`)**
+  - Pure Astropy FITS reader parsing `WAVELENGTH`, `FLUX`, `COVAR`, and `MASK` directly with Plotly.js rendering.
+  - Client-side dynamic inverse-variance binning (Raw, 0.2 nm, 0.5 nm, 1.0 nm, 2.0 nm).
+  - $1\sigma$ noise band and bad pixel mask shading.
+  - Rest-frame line overlays pinned to paper coordinates during zoom/pan:
+    - **Emission lines**: Lyα, C IV, C III], Mg II, [O II], Hβ, [O III], Hα, [N II], [S II]
+    - **Absorption lines**: Ca II H/K, G-band, Mg b, Na D
+  - **Real-Time Redshift Slider**: Drag to dynamically shift line overlays for visual redshift confirmation.
+  - Individual exposure breakdown (Visits, arms, spectrographs, exposure times).
+  - One-click raw FITS and PNG downloads.
 
 ---
 

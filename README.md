@@ -117,7 +117,7 @@ python download_data.py
 
 ### Step 3: Launch Web Viewer (`pfs_target_viewer/`)
 
-The web application is **completely independent of the PFS pipeline (`pfs_pipe2d`, `lsst-scipipe`)**. It runs on a standard Python 3.10+ environment (FastAPI, Astropy, NumPy, Jinja2) and can be easily reproduced on any machine (laptop, workstation, or server).
+The web application is **completely independent of the PFS pipeline (`pfs_pipe2d`, `lsst-scipipe`)**. It runs on a standard Python 3.10+ environment (FastAPI, Astropy, NumPy, Jinja2) and can be easily reproduced on any machine (laptop, workstation, or server). It is engineered for instant responsiveness even with large-scale catalogs of 200,000+ targets.
 
 ```bash
 cd pfs_target_viewer
@@ -129,28 +129,83 @@ cd pfs_target_viewer
 
 Then open `http://localhost:8090` in your web browser.
 
-#### Key Features:
-1. **Search, Filter & High-Performance Pagination**:
-   - Real-time search by `obCode` (partial match) or 64-bit `objId` (exact match)
-   - Catalog ID (`catId`) dropdown filtering with per-catalog target counts
-   - Classification filter pills (`ALL`, `GALAXY`, `QSO`, `STAR`)
-   - Redshift range filtering ($z_{min} \le z \le z_{max}$, e.g. $z \ge 6.0$ or $z \ge 7.9$)
-   - Multi-column sorting (Redshift, Target ID, `catId`, Classification probabilities)
-   - Fast pagination handling 13,000+ targets smoothly (10, 25, 50, 100 per page)
-2. **Deep Parameter Inspection (`📋 Details`)**:
-   - Model candidates table (`redshift_candidates`: Rank, $z$, error, proba, reduced $\chi^2$, $p$-value, template)
-   - Line measurements table (`line_measurements`: Line name, rest wavelength, $z$, flux, EW, $\sigma$)
-   - Solver execution flags and warnings (`solver_results`)
-3. **Interactive FITS Spectrum Viewer (`📈 Plot`)**:
-   - Pure Astropy FITS reader parsing `WAVELENGTH`, `FLUX`, `COVAR`, and `MASK` directly
-   - Client-side dynamic inverse-variance binning (Raw, 0.2 nm, 0.5 nm, 1.0 nm, 2.0 nm)
-   - $1\sigma$ noise band and bad pixel mask shading
-   - Rest-frame line overlays:
-     - **Emission lines**: Lyα, C IV, C III], Mg II, [O II], Hβ, [O III], Hα, [N II], [S II]
-     - **Absorption lines**: Ca II H/K, G-band, Mg b, Na D
-   - **Real-time Redshift Slider**: Smooth 60fps line shifting for visual redshift confirmation
-   - Observations list (Visits, arms, spectrographs, exposure times)
-   - One-click raw FITS and PNG plot downloads
+---
+
+## ✨ Key Features & Capabilities
+
+### 1. High-Performance Search, Filter & Server-Side Query Caching
+- **Full-Dataset Instant Sorting & Pagination**:
+  - Powered by a server-side in-memory query cache (`SQL_CACHE`), multi-column sorting (Redshift, Velocity $v = c \cdot z$, Target ID, `catId`, classification probabilities) operates across the **entire dataset of matching targets (tens of thousands to 200k+) in sub-milliseconds**.
+  - Unlike single-page sorting, pagination (10, 25, 50, 100 per page) reflects true global ordering across all pages.
+- **Versatile Filter Toolbar**:
+  - Real-time search by `obCode` (substring) or 64-bit `objId` (exact match).
+  - Catalog ID (`catId`) dropdown with per-catalog target count badges.
+  - Classification filter pills (`ALL`, `GALAXY`, `QSO`, `STAR`).
+  - Redshift range filtering ($z_{min} \le z \le z_{max}$, e.g. $z \ge 6.0$).
+  - "With Spectra" checkbox to quickly isolate targets with extracted FITS/PNG.
+  - Column customizer to dynamically show or hide table columns.
+
+### 2. Mollweide All-Sky Celestial Map & Spatial Viewport Filtering
+- **Mollweide Projection with Fixed 2:1 Aspect Ratio**:
+  - Displays Right Ascension (RA) and Declination (Dec) projected onto an elliptical all-sky Mollweide map following astronomical convention (East to the left).
+  - Maintains true 2:1 aspect ratio during zooming and panning.
+- **Central Meridian (RA) Rotation Controls**:
+  - Interactive slider ($0^\circ \sim 360^\circ$) and quick preset buttons ($0^\circ, 60^\circ, 120^\circ, 180^\circ, 240^\circ, 300^\circ$) to center the sky view on your survey field.
+- **Dual Scope & Page Focus Rings**:
+  - Toggle between `📄 Page` (current table page targets) and `🌐 All Filtered` (all matching targets across survey, rendered smoothly via WebGL `scattergl` without arbitrary row limits). Active table targets are emphasized with white focus rings.
+- **"Filter Table by View" Spatial Filtering**:
+  - Pan/zoom to any celestial region of interest and click **"Filter Table by View"** to dynamically restrict the table to targets within the visible sky bounding box (with an on-map viewport bounding box overlay).
+- **Dataset-Tied Fast Celestial Coordinate Cache**:
+  - On startup or dataset switch, celestial coordinates are generated and stored in a compressed disk cache (`.{dbname}_sky_cache.json.gz`) directly in the dataset's directory.
+  - Subsequent launches and page loads retrieve the full-sky coordinate catalog in ~2ms from memory or disk, accelerated by HTTP ETag (304 Not Modified) and GZip compression.
+
+### 3. Advanced SQL Query Mode & Schema Explorer
+- **Interactive In-Browser SQL Query Editor**:
+  - Switch freely between Standard Filters and a dedicated SQL Query Editor.
+  - Resizable editor aligned with the interactive Schema Explorer (browsing tables, views, column data types, and row counts).
+- **Custom Astronomical SQL Functions**:
+  - `CONE_SEARCH(ra, dec, center_ra, center_dec, radius_arcsec)`: Fast circular aperture cone search
+  - `BOX_SEARCH(ra, dec, ra_min, ra_max, dec_min, dec_max)`: Rectangular boundary search
+  - Math extensions: `SQRT`, `POW`, `COS`, `SIN`, `RADIANS`, `DEGREES`, `LOG10`, `LN`, `EXP` directly within SQLite queries.
+- **Astronomical SQL Presets**:
+  - One-click template queries for Cone searches, high-$z$ quasars, emission line flux rankings, solver warnings, and more.
+- **Dynamic Table Column Mapping**:
+  - Any custom column selected in SQL (e.g., `ts.combination`, `lm.lineFlux`, `lm.lineEW`, or joined tables) is automatically extracted and displayed as a dedicated column in the results table.
+
+### 4. Multi-Wavelength Optical Cutout Imaging (HSC & Pan-STARRS)
+- **Direct Optical Context**:
+  - Deep inspection modal automatically fetches and displays 3-color optical cutouts from Hyper Suprime-Cam (HSC) Subaru Strategic Program (SSP).
+  - **Intelligent Fallback**: Detects missing HSC coverage or blank/white dummy frames and automatically falls back to Pan-STARRS1 (PS1) color cutouts.
+
+### 5. PNG Quick-Look & Sequential Browsing
+- **Effortless Target Inspection**:
+  - Launch high-resolution PNG spectrum plots directly from table thumbnails or celestial map markers.
+  - Slide through targets effortlessly using keyboard arrow keys (`←` / `→`) or floating navigation buttons (`❮` / `❯`) without closing the modal.
+  - Automatically fetches the next page when crossing page boundaries.
+  - Synchronized table row highlighting and one-click jump to the interactive Plotly viewer with preserved redshift.
+
+### 6. Deep Parameter Inspection (`📋 Details`)
+- **Comprehensive Pipeline Diagnostics**:
+  - Model candidate rankings (`redshift_candidates`: Rank, $z$, error, proba, reduced $\chi^2$, $p$-value, template).
+  - Detected line measurements (`line_measurements`: Line name, rest wavelength, $z$, flux, EW, $\sigma$).
+  - Solver execution flags and warnings (`solver_results`).
+
+### 7. Interactive FITS Spectrum Viewer (`📈 Plot`)
+- **Precision Plotly.js Analysis**:
+  - Direct FITS reader parsing `WAVELENGTH`, `FLUX`, `COVAR`, and `MASK`.
+  - Client-side dynamic inverse-variance binning (Raw, 0.2 nm, 0.5 nm, 1.0 nm, 2.0 nm).
+  - $1\sigma$ noise band and bad pixel mask shading.
+  - Rest-frame line overlays pinned to paper coordinates during zoom/pan:
+    - **Emission lines**: Lyα, C IV, C III], Mg II, [O II], Hβ, [O III], Hα, [N II], [S II]
+    - **Absorption lines**: Ca II H/K, G-band, Mg b, Na D
+  - **Real-Time Redshift Slider**: Drag to dynamically shift line overlays for visual redshift confirmation.
+  - Individual exposure breakdown (Visits, arms, spectrographs, exposure times).
+  - One-click raw FITS and PNG downloads.
+
+### 8. Scalable Architecture for Large Datasets (Phase 2 Sharding)
+- **Built for 200,000+ Targets**:
+  - Supports directory sharding (`fits/NNN/`, `png/NNN/`) to bypass OS-level single-directory entry limits.
+  - Automatically discovers file locations using database-backed path indices (`target_files` table), sharded directories, or legacy flat structures.
 
 ---
 

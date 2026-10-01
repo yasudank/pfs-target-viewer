@@ -14,7 +14,9 @@ import time
 import urllib.parse
 import math
 import re
+import threading
 import urllib.request
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
 from pydantic import BaseModel
@@ -1185,10 +1187,84 @@ class SqlQueryRequest(BaseModel):
     sort_by: Optional[str] = None
     order: Optional[str] = "asc"
     skip_sky: Optional[bool] = False
+    force_refresh: Optional[bool] = False
 
     def get_sql(self) -> str:
         val = self.sql or self.query or ""
         return val.strip()
+
+
+class SqlQueryCache:
+    """In-memory LRU cache for SQL query results to enable instant pagination and whole-dataset sorting."""
+    def __init__(self, max_entries: int = 8, ttl_sec: float = 1800.0):
+        self.max_entries = max_entries
+        self.ttl_sec = ttl_sec
+        self.cache: OrderedDict[str, dict] = OrderedDict()
+        self.lock = threading.Lock()
+
+    def _normalize_key(self, sql: str) -> str:
+        # Strip comments and whitespace to form a stable cache key
+        clean = re.sub(r"--[^\n]*\n?", " ", sql)
+        clean = re.sub(r"/\*.*?\*/", " ", clean, flags=re.DOTALL)
+        clean = " ".join(clean.strip().split())
+        return hashlib.sha256(clean.encode("utf-8")).hexdigest()
+
+    def get(self, sql: str) -> Optional[dict]:
+        key = self._normalize_key(sql)
+        with self.lock:
+            if key not in self.cache:
+                return None
+            entry = self.cache[key]
+            if time.time() - entry["timestamp"] > self.ttl_sec:
+                del self.cache[key]
+                return None
+            self.cache.move_to_end(key)
+            return entry
+
+    def put(self, sql: str, data: dict):
+        key = self._normalize_key(sql)
+        with self.lock:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+            self.cache[key] = {
+                **data,
+                "timestamp": time.time(),
+            }
+            while len(self.cache) > self.max_entries:
+                self.cache.popitem(last=False)
+
+    def clear(self):
+        with self.lock:
+            self.cache.clear()
+
+
+SQL_CACHE = SqlQueryCache(max_entries=8, ttl_sec=1800.0)
+
+
+def sort_cached_rows(rows: List[dict], sort_by: Optional[str], order: Optional[str]) -> List[dict]:
+    """Sort list of target dictionaries by a given column with NULLs placed at the end."""
+    if not sort_by:
+        return rows
+
+    is_desc = (order or "asc").lower() == "desc"
+
+    valid = []
+    nulls = []
+    for r in rows:
+        v = r.get(sort_by)
+        if v is None or v == "":
+            nulls.append(r)
+        else:
+            valid.append(r)
+
+    def val_key(r):
+        v = r.get(sort_by)
+        if isinstance(v, (int, float)):
+            return (0, v)
+        return (1, str(v).lower())
+
+    valid.sort(key=val_key, reverse=is_desc)
+    return valid + nulls
 
 
 def strip_trailing_order_by(sql: str) -> str:
@@ -1537,7 +1613,7 @@ def validate_sql(req: SqlValidateRequest):
 
 @app.post("/api/sql/query")
 def execute_sql_query(req: SqlQueryRequest):
-    """Execute a custom SQL query with safety, pagination, auto-projection, and sky coordinates."""
+    """Execute a custom SQL query with memory caching, full-dataset sorting, and pagination."""
     t_start = time.time()
     raw_query = req.get_sql()
     if not raw_query:
@@ -1548,62 +1624,69 @@ def execute_sql_query(req: SqlQueryRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    limit = max(1, min(100, req.limit))
+    page = max(1, req.page)
+    offset = (page - 1) * limit
+
+    # Check cache first if not explicitly forced to refresh
+    cache_key_source = strip_trailing_order_by(optimized_sql)
+    if not req.force_refresh:
+        cached = SQL_CACHE.get(cache_key_source)
+        if cached:
+            all_rows = cached["all_rows"]
+            total = cached["total"]
+            pages = max(1, math.ceil(total / limit)) if total > 0 else 1
+
+            # Sort full dataset in memory
+            sorted_rows = sort_cached_rows(all_rows, req.sort_by, req.order)
+            page_rows = sorted_rows[offset : offset + limit]
+
+            # Send sky targets only if requested (skip on page flip / sort to save bandwidth)
+            sky_targets = [] if req.skip_sky else cached.get("sky_targets", [])
+            duration_ms = round((time.time() - t_start) * 1000.0, 1)
+
+            return {
+                "total": total,
+                "page": page,
+                "limit": limit,
+                "pages": pages,
+                "duration_ms": duration_ms,
+                "execution_time_ms": duration_ms,
+                "has_identity": cached["has_identity"],
+                "user_columns": cached["user_columns"],
+                "columns": cached["columns"],
+                "targets": page_rows,
+                "sky_targets": sky_targets,
+                "cached": True,
+            }
+
+    # Cache miss: execute query on database
     conn = get_db()
-    set_query_timeout(conn, timeout_sec=8.0)
+    set_query_timeout(conn, timeout_sec=15.0)
     cur = conn.cursor()
     try:
         # Wrap query with target_summary for identity auto-projection if applicable
         try:
             executable_sql, user_cols, has_identity = wrap_query_with_target_summary(conn, optimized_sql)
         except Exception as wrap_err:
-            # If wrap failed (e.g. invalid column reference), try raw optimized sql
             executable_sql = optimized_sql
             user_cols = []
             has_identity = False
 
-        # 1. Count total matching rows (strip trailing ORDER BY for high speed)
+        # Execute base query without trailing ORDER BY to cache full result set
         unordered_sql = strip_trailing_order_by(executable_sql)
-        count_sql = f"SELECT count(*) FROM (\n{unordered_sql}\n) AS _total_count"
         try:
-            cur.execute(count_sql)
-            total = cur.fetchone()[0]
+            cur.execute(unordered_sql)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Query Execution Error: {e}")
 
-        limit = max(1, min(100, req.limit))
-        page = max(1, req.page)
-        offset = (page - 1) * limit
+        raw_rows = cur.fetchall()
+        total = len(raw_rows)
         pages = max(1, math.ceil(total / limit)) if total > 0 else 1
 
-        # 2. Fetch current page rows (with optional ORDER BY and explicit newline before LIMIT)
-        if req.sort_by:
-            clean_sort = re.sub(r"[^a-zA-Z0-9_.]", "", req.sort_by.strip())
-            if clean_sort:
-                sort_dir = "DESC" if (req.order or "").lower() == "desc" else "ASC"
-                page_sql = f"""SELECT * FROM (
-{unordered_sql}
-) AS _sorted_page
-ORDER BY "{clean_sort}" {sort_dir} NULLS LAST
-LIMIT ? OFFSET ?"""
-            else:
-                page_sql = f"{executable_sql}\nLIMIT ? OFFSET ?"
-        else:
-            page_sql = f"{executable_sql}\nLIMIT ? OFFSET ?"
-
-        try:
-            cur.execute(page_sql, (limit, offset))
-        except Exception as sort_err:
-            if req.sort_by:
-                # If sorting by this column fails (e.g. column not in output), fallback gracefully
-                print(f"Warning: Sort by {req.sort_by} failed ({sort_err}), falling back to default order")
-                page_sql = f"{executable_sql}\nLIMIT ? OFFSET ?"
-                cur.execute(page_sql, (limit, offset))
-            else:
-                raise
-        raw_rows = cur.fetchall()
-
-        # Format rows into JSON dictionaries
-        result_targets = []
+        # Format and sanitize all rows
+        all_clean_rows = []
+        sky_targets = []
         for r in raw_rows:
             d = dict(r)
             clean_item = {}
@@ -1613,32 +1696,36 @@ LIMIT ? OFFSET ?"""
                 clean_item["catId"] = int(clean_item["catId"])
             if "objId" in clean_item and clean_item["objId"] is not None:
                 clean_item["objId"] = str(clean_item["objId"])
-            result_targets.append(clean_item)
+            all_clean_rows.append(clean_item)
 
-        # 3. Extract sky positions for Celestial Map (up to 50,000 coordinates)
-        sky_targets = []
-        if has_identity and not req.skip_sky:
-            sky_sql = f"""
-                SELECT catId, objId, obCode, ra, dec, classificationName, bestRedshift, bestVelocity
-                FROM (\n{unordered_sql}\n) AS _sky_sub
-                WHERE ra IS NOT NULL AND dec IS NOT NULL
-                LIMIT 50000
-            """
-            try:
-                cur.execute(sky_sql)
-                for sr in cur.fetchall():
+            if has_identity and len(sky_targets) < 50000 and not req.skip_sky:
+                ra_val = clean_item.get("ra")
+                dec_val = clean_item.get("dec")
+                if ra_val is not None and dec_val is not None:
                     sky_targets.append({
-                        "catId": sr["catId"],
-                        "objId": str(sr["objId"]),
-                        "obCode": sr["obCode"] or "",
-                        "ra": sanitize_val(sr["ra"]),
-                        "dec": sanitize_val(sr["dec"]),
-                        "classificationName": sr["classificationName"] or "UNKNOWN",
-                        "bestRedshift": sanitize_val(sr["bestRedshift"]),
-                        "bestVelocity": sanitize_val(sr["bestVelocity"]),
+                        "catId": clean_item.get("catId"),
+                        "objId": clean_item.get("objId"),
+                        "obCode": clean_item.get("obCode", ""),
+                        "ra": ra_val,
+                        "dec": dec_val,
+                        "classificationName": clean_item.get("classificationName", "UNKNOWN"),
+                        "bestRedshift": clean_item.get("bestRedshift"),
+                        "bestVelocity": clean_item.get("bestVelocity"),
                     })
-            except Exception as sky_err:
-                print(f"Warning: Sky coordinates extraction skipped: {sky_err}")
+
+        # Store in LRU cache
+        SQL_CACHE.put(cache_key_source, {
+            "total": total,
+            "has_identity": has_identity,
+            "user_columns": user_cols,
+            "columns": user_cols,
+            "all_rows": all_clean_rows,
+            "sky_targets": sky_targets,
+        })
+
+        # Sort full dataset by requested column if specified
+        sorted_rows = sort_cached_rows(all_clean_rows, req.sort_by, req.order)
+        page_rows = sorted_rows[offset : offset + limit]
 
         duration_ms = round((time.time() - t_start) * 1000.0, 1)
 
@@ -1652,8 +1739,9 @@ LIMIT ? OFFSET ?"""
             "has_identity": has_identity,
             "user_columns": user_cols,
             "columns": user_cols,
-            "targets": result_targets,
+            "targets": page_rows,
             "sky_targets": sky_targets,
+            "cached": False,
         }
     finally:
         conn.close()

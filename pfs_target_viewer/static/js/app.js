@@ -539,7 +539,7 @@ async function validateSql() {
   }
 }
 
-async function runSqlQuery(page = 1) {
+async function runSqlQuery(page = 1, skipSky = false, forceRefresh = false) {
   const query = elements.sqlQueryInput.value.trim();
   if (!query) {
     setSqlFeedback("error", "Query editor is empty. Please enter an SQL query or select a template.");
@@ -562,6 +562,8 @@ async function runSqlQuery(page = 1) {
         limit: state.limit,
         sort_by: state.sqlSortBy,
         order: state.sqlOrder,
+        skip_sky: skipSky,
+        force_refresh: forceRefresh,
       }),
     });
 
@@ -592,11 +594,13 @@ async function runSqlQuery(page = 1) {
     if (elements.sqlFilterBadge) {
       elements.sqlFilterBadge.style.display = "inline-flex";
       if (elements.sqlFilterText) {
-        elements.sqlFilterText.textContent = `SQL: ${data.total.toLocaleString()} targets (${data.execution_time_ms} ms)`;
+        const cacheTag = data.cached ? " ⚡cached" : "";
+        elements.sqlFilterText.textContent = `SQL: ${data.total.toLocaleString()} targets (${data.execution_time_ms} ms${cacheTag})`;
       }
     }
 
-    setSqlFeedback("success", `✓ Query completed in ${data.execution_time_ms} ms (${data.total.toLocaleString()} rows found)`);
+    const cacheMsg = data.cached ? " (⚡ cached from server memory)" : "";
+    setSqlFeedback("success", `✓ Query completed in ${data.execution_time_ms} ms${cacheMsg} (${data.total.toLocaleString()} rows found)`);
 
     // Update Sky Map coordinates with returned sky_targets
     if (data.sky_targets) {
@@ -953,12 +957,16 @@ function handleColumnHeaderSort(sortKey) {
     }
   }
 
-  // 1. Instant client-side in-memory sort (<1ms, no server lag)
-  sortTargetsInMemory(sortKey, newOrder);
-
-  // 2. Re-render table and update indicator arrows immediately
-  renderTargetsTable(state.targets);
+  // 1. Update sort indicators and UI state
+  state.page = 1;
   updateTableSortIndicators();
+
+  // 2. Fetch full-dataset sorted results from server memory cache
+  if (state.filterMode === "sql" && state.activeSqlQuery) {
+    runSqlQuery(1, true, false);
+  } else {
+    fetchTargets();
+  }
 }
 
 function updateTableSortIndicators() {
@@ -1101,7 +1109,7 @@ function initEventListeners() {
       state.page = 1;
       state.sqlSortBy = null;
       state.sqlOrder = "asc";
-      runSqlQuery(1);
+      runSqlQuery(1, false, true);
     });
   }
 
@@ -1155,7 +1163,7 @@ function initEventListeners() {
         state.page = 1;
         state.sqlSortBy = null;
         state.sqlOrder = "asc";
-        runSqlQuery(1);
+        runSqlQuery(1, false, true);
       }
       // Tab key support for indentation
       if (e.key === "Tab") {
@@ -1261,7 +1269,7 @@ function initEventListeners() {
     state.limit = parseInt(e.target.value, 10);
     state.page = 1;
     if (state.filterMode === "sql" && state.activeSqlQuery) {
-      runSqlQuery(1);
+      runSqlQuery(1, true, false);
     } else {
       fetchTargets();
     }
@@ -1315,7 +1323,7 @@ function initEventListeners() {
     if (state.page > 1) {
       state.page--;
       if (state.filterMode === "sql" && state.activeSqlQuery) {
-        runSqlQuery(state.page);
+        runSqlQuery(state.page, true, false);
       } else {
         fetchTargets();
       }
@@ -1326,7 +1334,7 @@ function initEventListeners() {
     if (state.page < state.pages) {
       state.page++;
       if (state.filterMode === "sql" && state.activeSqlQuery) {
-        runSqlQuery(state.page);
+        runSqlQuery(state.page, true, false);
       } else {
         fetchTargets();
       }
@@ -1338,7 +1346,7 @@ function initEventListeners() {
     if (!isNaN(val) && val >= 1 && val <= state.pages) {
       state.page = val;
       if (state.filterMode === "sql" && state.activeSqlQuery) {
-        runSqlQuery(state.page);
+        runSqlQuery(state.page, true, false);
       } else {
         fetchTargets();
       }
@@ -1739,7 +1747,7 @@ function renderTargetsTable(targets) {
   if (activeSort) {
     const label = sortLabels[activeSort] || activeSort;
     const orderIcon = (activeOrder || "asc").toLowerCase() === "desc" ? "▼ DESC" : "▲ ASC";
-    sortBadge = ` <span class="badge badge-sort-info" title="Current view sorted instantly in browser">⚡ Sorted: ${label} ${orderIcon}</span>`;
+    sortBadge = ` <span class="badge badge-sort-info" title="Full dataset sorted across all pages via server cache">⚡ Sorted: ${label} ${orderIcon}</span>`;
   }
   elements.resultsCount.innerHTML = `Showing ${startIdx.toLocaleString()}–${endIdx.toLocaleString()} of ${state.total.toLocaleString()} targets${sortBadge}`;
 

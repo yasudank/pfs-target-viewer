@@ -67,49 +67,45 @@ def bin_spectrum(wavelength, flux, variance, bin_width):
     """
     Bin (wavelength, flux, variance) onto a uniform wavelength grid.
     Points falling in the same bin are combined with inverse-variance weighting.
-    Uses np.bincount for O(N) single-pass binning (~50x faster than linear scanning).
+    Uses np.bincount for O(N) single-pass binning while producing results identical to the original grid.
     """
     wavelength = np.asarray(wavelength)
     flux = np.asarray(flux)
     variance = np.asarray(variance)
 
-    finite = np.isfinite(flux) & np.isfinite(variance) & (variance > 0) & np.isfinite(wavelength)
-    if not np.any(finite):
+    waveMin = np.nanmin(wavelength)
+    waveMax = np.nanmax(wavelength)
+    if not np.isfinite(waveMin) or not np.isfinite(waveMax):
         return np.array([]), np.array([]), np.array([])
-
-    w = wavelength[finite]
-    f = flux[finite]
-    v = variance[finite]
-
-    waveMin = np.min(w)
-    waveMax = np.max(w)
     if waveMin == waveMax:
-        return np.array([waveMin]), np.array([f[0]]), np.array([v[0]])
+        return np.array([waveMin]), np.array([flux[0]]), np.array([variance[0]])
 
     edges = np.arange(waveMin, waveMax + bin_width, bin_width)
     nBins = len(edges) - 1
     if nBins <= 0:
         return np.array([]), np.array([]), np.array([])
 
-    binIndex = np.digitize(w, edges) - 1
-    in_range = (binIndex >= 0) & (binIndex < nBins)
-    if not np.any(in_range):
-        return np.array([]), np.array([]), np.array([])
-
-    idx = binIndex[in_range]
-    weights = 1.0 / v[in_range]
-    weighted_flux = f[in_range] * weights
-
-    wsum = np.bincount(idx, weights=weights, minlength=nBins)
-    valid = wsum > 0
+    binIndex = np.digitize(wavelength, edges) - 1
+    finite = np.isfinite(flux) & np.isfinite(variance) & (variance > 0)
+    in_range = finite & (binIndex >= 0) & (binIndex < nBins)
 
     binWave = 0.5 * (edges[:-1] + edges[1:])
     binFlux = np.full(nBins, np.nan)
     binVariance = np.full(nBins, np.nan)
 
-    binFlux[valid] = np.bincount(idx, weights=weighted_flux, minlength=nBins)[valid] / wsum[valid]
-    binVariance[valid] = 1.0 / wsum[valid]
+    if np.any(in_range):
+        idx = binIndex[in_range]
+        f = flux[in_range]
+        v = variance[in_range]
 
+        weights = 1.0 / v
+        wsum = np.bincount(idx, weights=weights, minlength=nBins)
+        valid = wsum > 0
+
+        binFlux[valid] = np.bincount(idx, weights=(f * weights), minlength=nBins)[valid] / wsum[valid]
+        binVariance[valid] = 1.0 / wsum[valid]
+
+    valid = np.isfinite(binFlux)
     return binWave[valid], binFlux[valid], binVariance[valid]
 
 

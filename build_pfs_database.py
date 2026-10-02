@@ -517,9 +517,28 @@ def load_redshift_candidates(butler, conn, limit=None):
 
 
 def populate_target_summary(conn):
-    """Populate target_summary materialized table from targets and latest fiber_configs."""
+    """Populate target_summary materialized table from targets and latest fiber_configs while preserving file paths."""
     print("\nPopulating target_summary materialized table...")
     cur = conn.cursor()
+
+    # Check if target_summary exists and has existing file path entries to preserve
+    cur.execute("PRAGMA table_info(target_summary)")
+    cols = {row[1] for row in cur.fetchall()}
+    has_file_cols = "has_fits" in cols and "fits_path" in cols
+
+    cur.execute("DROP TABLE IF EXISTS _temp_target_files")
+    if has_file_cols:
+        cur.execute("""
+            CREATE TEMP TABLE _temp_target_files AS
+            SELECT catId, objId, combination, has_fits, fits_path, has_png, png_path
+            FROM target_summary
+            WHERE has_fits = 1 OR has_png = 1
+        """)
+        cur.execute("SELECT count(*) FROM _temp_target_files")
+        preserved = cur.fetchone()[0]
+        if preserved > 0:
+            print(f"  Preserving {preserved:,} existing file path records...")
+
     cur.execute("DELETE FROM target_summary")
     cur.execute("""
         INSERT INTO target_summary (
@@ -536,14 +555,16 @@ def populate_target_summary(conn):
             t.classificationName, t.probaGalaxy, t.probaStar, t.probaQSO,
             t.bestRedshift, t.bestRedshiftError, t.bestVelocity, t.bestVelocityError,
             t.bestSubClass, t.hasSolution,
-            0, NULL, 0, NULL
+            COALESCE(tf.has_fits, 0), tf.fits_path, COALESCE(tf.has_png, 0), tf.png_path
         FROM targets t
         LEFT JOIN (
             SELECT catId, objId, obCode, targetTypeName, fiberStatusName, ra, dec,
                    ROW_NUMBER() OVER (PARTITION BY catId, objId ORDER BY visit DESC) as rn
             FROM fiber_configs
-        ) fc ON t.catId = fc.catId AND t.objId = fc.objId AND fc.rn = 1;
+        ) fc ON t.catId = fc.catId AND t.objId = fc.objId AND fc.rn = 1
+        LEFT JOIN _temp_target_files tf ON t.catId = tf.catId AND t.objId = tf.objId AND t.combination = tf.combination;
     """)
+    cur.execute("DROP TABLE IF EXISTS _temp_target_files")
     conn.commit()
     cur.execute("SELECT count(*) FROM target_summary")
     cnt = cur.fetchone()[0]

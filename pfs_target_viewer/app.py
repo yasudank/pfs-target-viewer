@@ -226,7 +226,7 @@ def configure_paths(
         if "load_or_build_master_sky_cache" in globals() and os.path.exists(DB_PATH):
             threading.Thread(
                 target=load_or_build_master_sky_cache,
-                kwargs={"force": True, "db_path": DB_PATH},
+                kwargs={"force": False, "db_path": DB_PATH},
                 daemon=True,
             ).start()
 
@@ -358,9 +358,10 @@ def find_files(
     cat_id: int,
     obj_id: int,
     ob_code: Optional[str] = None,
+    combination: Optional[Union[str, int]] = None,
     known_fits_path: Optional[str] = None,
     known_png_path: Optional[str] = None,
-):
+) -> Tuple[Optional[str], Optional[str]]:
     """
     Locate matching FITS and PNG files.
     Priority:
@@ -384,10 +385,15 @@ def find_files(
     if fits_path and png_path:
         return fits_path, png_path
 
-    # Candidate basenames
+    # Candidate basenames (both with combination suffix and without)
     candidates_base = []
+    comb_str = str(combination).strip() if (combination is not None and str(combination).strip() != "") else None
+    if ob_code and comb_str:
+        candidates_base.append(clean_str_name(f"{ob_code}_{cat_id}_{obj_id}_{comb_str}"))
     if ob_code:
         candidates_base.append(clean_str_name(f"{ob_code}_{cat_id}_{obj_id}"))
+    if comb_str:
+        candidates_base.append(f"{cat_id}_{obj_id}_{comb_str}")
     candidates_base.append(f"{cat_id}_{obj_id}")
 
     shard_slot = f"{int(obj_id) % 1000:03d}"
@@ -487,18 +493,15 @@ def load_or_build_master_sky_cache(force: bool = False, db_path: Optional[str] =
     if not active_db or not os.path.exists(active_db):
         return None, None, None
 
-    # If active database changed since last cache load, force reload!
-    if _CURRENT_CACHED_DB_PATH != active_db:
-        force = True
+    # If active database changed since last cache load, memory cache must be updated
+    db_changed = (_CURRENT_CACHED_DB_PATH != active_db)
 
-    if not force and _MASTER_SKY_GZIP_BYTES is not None and _MASTER_SKY_JSON_BYTES is not None:
+    if not force and not db_changed and _MASTER_SKY_GZIP_BYTES is not None and _MASTER_SKY_JSON_BYTES is not None:
         return _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG
 
     with _MASTER_SKY_LOCK:
-        if _CURRENT_CACHED_DB_PATH != active_db:
-            force = True
-
-        if not force and _MASTER_SKY_GZIP_BYTES is not None and _MASTER_SKY_JSON_BYTES is not None:
+        db_changed = (_CURRENT_CACHED_DB_PATH != active_db)
+        if not force and not db_changed and _MASTER_SKY_GZIP_BYTES is not None and _MASTER_SKY_JSON_BYTES is not None:
             return _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG
 
         cache_file = get_sky_cache_file_path(active_db)
@@ -507,7 +510,7 @@ def load_or_build_master_sky_cache(force: bool = False, db_path: Optional[str] =
 
         db_mtime = os.path.getmtime(active_db)
 
-        # 1. Try reading from disk cache if valid and newer than database
+        # 1. Try reading from disk cache if valid and newer than database (even after db switch, disk cache is preferred over rebuilding)
         if not force and os.path.exists(chosen_cache_file) and os.path.getmtime(chosen_cache_file) >= db_mtime:
             try:
                 t0 = time.time()
@@ -817,6 +820,7 @@ def get_targets(
                     cat_val,
                     obj_val,
                     ob_val,
+                    combination=d.get("combination"),
                     known_fits_path=rec_fits_path if rec_has_fits else None,
                     known_png_path=rec_png_path if rec_has_png else None,
                 )
@@ -1048,6 +1052,7 @@ def get_target_details(catId: int, objId: str):
             catId,
             obj_id_int,
             target_info.get("obCode"),
+            combination=target_info.get("combination"),
             known_fits_path=target_info.get("fits_path"),
             known_png_path=target_info.get("png_path"),
         )
@@ -1080,14 +1085,15 @@ def get_spectrum_data(catId: int, objId: str):
     tbl = get_summary_table(conn)
     has_file_cols = check_db_file_columns(conn)
     file_cols_sql = ", fits_path, png_path" if has_file_cols else ""
-    cur.execute(f"SELECT obCode {file_cols_sql} FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
+    cur.execute(f"SELECT obCode, combination {file_cols_sql} FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
     row = cur.fetchone()
     conn.close()
 
     ob_code = row["obCode"] if row else None
+    comb_val = row["combination"] if (row and "combination" in row.keys()) else None
     known_fits = row["fits_path"] if (row and has_file_cols and "fits_path" in row.keys()) else None
 
-    fits_file, _ = find_files(catId, obj_id_int, ob_code, known_fits_path=known_fits)
+    fits_file, _ = find_files(catId, obj_id_int, ob_code, combination=comb_val, known_fits_path=known_fits)
     if not fits_file or not os.path.exists(fits_file):
         raise HTTPException(status_code=404, detail=f"FITS file for target catId={catId}, objId={objId} not found")
 
@@ -1193,14 +1199,15 @@ def download_fits(catId: int, objId: str):
     tbl = get_summary_table(conn)
     has_file_cols = check_db_file_columns(conn)
     file_cols_sql = ", fits_path" if has_file_cols else ""
-    cur.execute(f"SELECT obCode {file_cols_sql} FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
+    cur.execute(f"SELECT obCode, combination {file_cols_sql} FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
     row = cur.fetchone()
     conn.close()
 
     ob_code = row["obCode"] if row else None
+    comb_val = row["combination"] if (row and "combination" in row.keys()) else None
     known_fits = row["fits_path"] if (row and has_file_cols and "fits_path" in row.keys()) else None
 
-    fits_file, _ = find_files(catId, obj_id_int, ob_code, known_fits_path=known_fits)
+    fits_file, _ = find_files(catId, obj_id_int, ob_code, combination=comb_val, known_fits_path=known_fits)
     if not fits_file or not os.path.exists(fits_file):
         raise HTTPException(status_code=404, detail="FITS file not found")
     filename = os.path.basename(fits_file)
@@ -1267,6 +1274,8 @@ def get_target_cutout(
     HSC coverage (or dummy blank white image returned), falls back to Pan-STARRS DR1 (or DSS2).
     """
     survey_key = survey.lower().strip()
+    if survey_key != "auto" and survey_key not in SURVEY_HIPS_MAP:
+        raise HTTPException(status_code=400, detail=f"Unsupported survey: {survey}")
     cache_prefix = f"cutout_{survey_key}_{ra:.5f}_{dec:+.5f}_{fov:.5f}_{width}x{height}"
     cache_img = os.path.join(CUTOUT_CACHE_DIR, f"{cache_prefix}.jpg")
     cache_meta = os.path.join(CUTOUT_CACHE_DIR, f"{cache_prefix}.json")
@@ -1444,6 +1453,7 @@ class SqlQueryCache:
 
 
 SQL_CACHE = SqlQueryCache(max_entries=8, ttl_sec=1800.0)
+MAX_SQL_CACHE_ROWS = 300_000
 
 
 def sort_cached_rows(rows: List[dict], sort_by: Optional[str], order: Optional[str]) -> List[dict]:
@@ -1473,51 +1483,94 @@ def sort_cached_rows(rows: List[dict], sort_by: Optional[str], order: Optional[s
 
 
 def strip_trailing_order_by(sql: str) -> str:
-    """Strip the outermost trailing ORDER BY clause from a query for fast count(*) and sky extraction.
+    """Strip the outermost top-level ORDER BY clause while preserving any trailing LIMIT/OFFSET.
 
-    Uses reverse scanning instead of regex to avoid catastrophic backtracking on
-    complex queries with JOINs, qualified column names, and CONE_SEARCH(...) expressions.
-    Only strips ORDER BY if it appears at the top nesting level (not inside subqueries).
+    Uses backward scanning and parenthesis/quote depth tracking to safely avoid stripping
+    ORDER BY inside subqueries or string literals.
     """
     clean = sql.strip().rstrip(";").rstrip()
-
-    # Walk backwards through the string to find the last top-level ORDER BY.
-    # We need to track parenthesis depth to avoid stripping ORDER BY inside subqueries.
     upper = clean.upper()
 
-    # Find the last occurrence of 'ORDER' that is followed by whitespace and 'BY'
+    # Find the last top-level ORDER BY
     search_from = len(upper)
     while True:
         pos = upper.rfind("ORDER", 0, search_from)
         if pos < 0:
-            return clean  # No ORDER BY found at all
+            return clean
 
-        # Check that it's followed by whitespace + BY
+        # Check word boundary before ORDER
+        if pos > 0 and (upper[pos - 1].isalnum() or upper[pos - 1] == "_"):
+            search_from = pos
+            continue
+
+        # Check followed by BY
         rest = upper[pos + 5:].lstrip()
         if not rest.startswith("BY"):
             search_from = pos
             continue
 
-        # Check that ORDER is at a word boundary (not part of a larger identifier)
-        if pos > 0 and (upper[pos - 1].isalnum() or upper[pos - 1] == "_"):
+        # Check word boundary after BY
+        by_idx = upper.find("BY", pos + 5)
+        after_by = by_idx + 2
+        if after_by < len(upper) and (upper[after_by].isalnum() or upper[after_by] == "_"):
             search_from = pos
             continue
 
-        # Count parenthesis depth from start to this position.
-        # If depth != 0, this ORDER BY is inside a subquery — skip it.
+        # Check parenthesis depth and quotes up to pos
         depth = 0
+        in_quote = False
+        quote_char = ""
         for ch in clean[:pos]:
-            if ch == "(":
+            if in_quote:
+                if ch == quote_char:
+                    in_quote = False
+            elif ch in ("'", '"', '`'):
+                in_quote = True
+                quote_char = ch
+            elif ch == "(":
                 depth += 1
             elif ch == ")":
-                depth -= 1
+                depth = max(0, depth - 1)
 
-        if depth != 0:
+        if depth != 0 or in_quote:
             search_from = pos
             continue
 
-        # This is a top-level ORDER BY. Strip everything from here to the end.
-        return clean[:pos].rstrip()
+        # Top-level ORDER BY found at pos! Now scan forward to find any top-level LIMIT clause
+        limit_pos = -1
+        depth = 0
+        in_quote = False
+        quote_char = ""
+        idx = after_by
+        clean_len = len(clean)
+
+        while idx < clean_len:
+            ch = clean[idx]
+            if in_quote:
+                if ch == quote_char:
+                    in_quote = False
+            elif ch in ("'", '"', '`'):
+                in_quote = True
+                quote_char = ch
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth = max(0, depth - 1)
+            elif depth == 0:
+                if upper[idx : idx + 5] == "LIMIT":
+                    prev_ok = (idx == 0 or not (upper[idx - 1].isalnum() or upper[idx - 1] == "_"))
+                    next_ok = (idx + 5 >= clean_len or not (upper[idx + 5].isalnum() or upper[idx + 5] == "_"))
+                    if prev_ok and next_ok:
+                        limit_pos = idx
+                        break
+            idx += 1
+
+        prefix = clean[:pos].rstrip()
+        if limit_pos >= 0:
+            limit_clause = clean[limit_pos:].strip()
+            return f"{prefix} {limit_clause}"
+        else:
+            return prefix
 
 
 DISALLOWED_SQL_PATTERNS = [
@@ -1768,6 +1821,7 @@ def get_database_schema():
                     "name": c_name,
                     "type": c_type,
                     "pk": is_pk,
+                    "primary_key": is_pk,
                     "description": desc,
                 })
 
@@ -1847,7 +1901,7 @@ def execute_sql_query(req: SqlQueryRequest):
             page_rows = sorted_rows[offset : offset + limit]
 
             # Send sky targets only if requested (skip on page flip / sort to save bandwidth)
-            sky_targets = [] if req.skip_sky else cached.get("sky_targets", [])
+            sky_targets = None if req.skip_sky else cached.get("sky_targets", [])
             duration_ms = round((time.time() - t_start) * 1000.0, 1)
 
             return {
@@ -1878,7 +1932,7 @@ def execute_sql_query(req: SqlQueryRequest):
             user_cols = []
             has_identity = False
 
-        # Execute base query without trailing ORDER BY to cache full result set
+        # Execute base query with ORDER BY stripped (preserving LIMIT/OFFSET) to cache result set
         unordered_sql = strip_trailing_order_by(executable_sql)
         try:
             cur.execute(unordered_sql)
@@ -1887,6 +1941,16 @@ def execute_sql_query(req: SqlQueryRequest):
 
         raw_rows = cur.fetchall()
         total = len(raw_rows)
+
+        # Enforce memory safety cap on cached SQL results (300,000 rows accommodates full survey while protecting against runaway queries)
+        MAX_SQL_CACHE_ROWS = 300_000
+        if total > MAX_SQL_CACHE_ROWS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Query returned {total:,} rows, exceeding the in-memory cache safety limit of {MAX_SQL_CACHE_ROWS:,} rows. "
+                       f"Please add a WHERE clause or LIMIT to restrict your query results."
+            )
+
         pages = max(1, math.ceil(total / limit)) if total > 0 else 1
 
         # Format and sanitize all rows
@@ -1945,7 +2009,7 @@ def execute_sql_query(req: SqlQueryRequest):
             "user_columns": user_cols,
             "columns": user_cols,
             "targets": page_rows,
-            "sky_targets": sky_targets,
+            "sky_targets": None if req.skip_sky else sky_targets,
             "cached": False,
         }
     finally:

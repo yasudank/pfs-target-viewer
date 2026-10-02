@@ -426,7 +426,7 @@ function renderSchemaTree(filterText = "") {
         </div>
         <div class="schema-table-columns" id="schemaCols_${tblName}" style="display: ${isExpanded ? 'flex' : 'none'};">
           ${matchingCols.map((c) => {
-            const pkClass = c.primary_key ? "primary-key" : "";
+            const pkClass = (c.pk || c.primary_key) ? "primary-key" : "";
             const tooltip = `${tblName}.${c.name} (${c.type})${c.description ? ' - ' + c.description : ''}`;
             return `
               <div class="schema-col-item ${pkClass}" 
@@ -531,8 +531,7 @@ async function validateSql() {
     if (!res.ok || !data.valid) {
       setSqlFeedback("error", `✗ Syntax Error: ${data.error || "Invalid SQL syntax"}`);
     } else {
-      const rowEst = data.estimated_rows != null ? ` (~${data.estimated_rows.toLocaleString()} est. rows)` : "";
-      setSqlFeedback("success", `✓ Query syntax is valid${rowEst}`);
+      setSqlFeedback("success", "✓ Query syntax is valid");
     }
   } catch (err) {
     setSqlFeedback("error", `Validation error: ${err.message}`);
@@ -602,8 +601,8 @@ async function runSqlQuery(page = 1, skipSky = false, forceRefresh = false) {
     const cacheMsg = data.cached ? " (⚡ cached from server memory)" : "";
     setSqlFeedback("success", `✓ Query completed in ${data.execution_time_ms} ms${cacheMsg} (${data.total.toLocaleString()} rows found)`);
 
-    // Update Sky Map coordinates with returned sky_targets only when new coordinates provided
-    if (data.sky_targets && data.sky_targets.length > 0) {
+    // Update Sky Map coordinates with returned sky_targets (clearing if 0 rows matched)
+    if (data.sky_targets !== null && data.sky_targets !== undefined) {
       state.allSkyTargets = data.sky_targets;
     }
     renderSkyMap(state.targets);
@@ -1354,11 +1353,18 @@ function initEventListeners() {
 
   // Modals closing
   const setupModalClose = (modal, ...triggers) => {
+    const hideModal = () => {
+      modal.style.display = "none";
+      if (modal === elements.detailsModal && state.currentCutoutBlobUrl) {
+        URL.revokeObjectURL(state.currentCutoutBlobUrl);
+        state.currentCutoutBlobUrl = null;
+      }
+    };
     triggers.forEach((btn) => {
-      if (btn) btn.addEventListener("click", () => (modal.style.display = "none"));
+      if (btn) btn.addEventListener("click", hideModal);
     });
     modal.addEventListener("click", (e) => {
-      if (e.target === modal) modal.style.display = "none";
+      if (e.target === modal) hideModal();
     });
   };
 
@@ -1650,7 +1656,10 @@ async function loadStats() {
 }
 
 async function fetchTargets() {
-  if (state.loading) return;
+  if (state.loading) {
+    state.pendingFetch = true;
+    return;
+  }
   state.loading = true;
   elements.loadingOverlay.classList.add("active");
 
@@ -1707,6 +1716,10 @@ async function fetchTargets() {
   } finally {
     state.loading = false;
     elements.loadingOverlay.classList.remove("active");
+    if (state.pendingFetch) {
+      state.pendingFetch = false;
+      fetchTargets();
+    }
   }
 }
 
@@ -1776,7 +1789,7 @@ function renderTargetsTable(targets) {
       // Thumbnail
       const thumbSrc = t.has_png ? `/api/targets/${t.catId}/${t.objId}/image` : null;
       const thumbHtml = thumbSrc
-        ? `<div class="thumb-container" onclick="openImagePreview(${t.catId}, '${t.objId}', '${t.obCode || ""}')" title="Click to view full spectrum plot">
+        ? `<div class="thumb-container" onclick="openImagePreview(${t.catId}, '${t.objId}')" title="Click to view full spectrum plot">
              <img src="${thumbSrc}" loading="lazy" alt="Spectrum thumbnail">
            </div>`
         : `<div class="thumb-container thumb-placeholder">No PNG</div>`;
@@ -2974,7 +2987,12 @@ async function loadSkyCutout(ra, dec) {
     const blob = await resp.blob();
     if (reqId !== currentCutoutRequestId) return;
 
+    if (state.currentCutoutBlobUrl) {
+      URL.revokeObjectURL(state.currentCutoutBlobUrl);
+      state.currentCutoutBlobUrl = null;
+    }
     const imgUrl = URL.createObjectURL(blob);
+    state.currentCutoutBlobUrl = imgUrl;
 
     if (elements.hscCutoutImg) {
       elements.hscCutoutImg.src = imgUrl;
@@ -3158,11 +3176,13 @@ window.openTargetDetails = async function (catId, objId) {
 
     // 4. Metadata Grid
     const t = data.target;
+    const raFormatted = (typeof t.ra === "number" && !isNaN(t.ra)) ? t.ra.toFixed(6) : "-";
+    const decFormatted = (typeof t.dec === "number" && !isNaN(t.dec)) ? t.dec.toFixed(6) : "-";
     elements.metaGrid.innerHTML = `
       <div class="meta-item"><div class="meta-label">Target ID</div><div class="meta-val">${t.objId}</div></div>
       <div class="meta-item"><div class="meta-label">obCode</div><div class="meta-val">${t.obCode || "-"}</div></div>
       <div class="meta-item"><div class="meta-label">Catalog ID</div><div class="meta-val">${t.catId}</div></div>
-      <div class="meta-item"><div class="meta-label">Coordinates (RA, Dec)</div><div class="meta-val">${t.ra ? t.ra.toFixed(6) : "-"}, ${t.dec ? t.dec.toFixed(6) : "-"}</div></div>
+      <div class="meta-item"><div class="meta-label">Coordinates (RA, Dec)</div><div class="meta-val">${raFormatted}, ${decFormatted}</div></div>
       <div class="meta-item"><div class="meta-label">Target Type</div><div class="meta-val">${t.targetTypeName || "-"}</div></div>
       <div class="meta-item"><div class="meta-label">Fiber Status</div><div class="meta-val">${t.fiberStatusName || "-"}</div></div>
       <div class="meta-item"><div class="meta-label">Classification</div><div class="meta-val">${t.classificationName || "-"}</div></div>

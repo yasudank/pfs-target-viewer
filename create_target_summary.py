@@ -72,6 +72,30 @@ def main():
     fc_count = cur.fetchone()[0]
     print(f"📊 Source 'fiber_configs' row count: {fc_count:,}", flush=True)
 
+    # Check if target_summary exists and has existing file path entries to preserve
+    cur.execute("PRAGMA table_info(target_summary)")
+    existing_cols = {row[1] for row in cur.fetchall()}
+    has_file_cols = "has_fits" in existing_cols and "fits_path" in existing_cols
+
+    cur.execute("DROP TABLE IF EXISTS _temp_target_files")
+    if has_file_cols:
+        cur.execute("""
+            CREATE TEMP TABLE _temp_target_files AS
+            SELECT catId, objId, combination, has_fits, fits_path, has_png, png_path
+            FROM target_summary
+            WHERE has_fits = 1 OR has_png = 1
+        """)
+        cur.execute("SELECT count(*) FROM _temp_target_files")
+        preserved = cur.fetchone()[0]
+        if preserved > 0:
+            print(f"ℹ️  Preserving {preserved:,} existing file path records...")
+
+    # Check columns in source 'targets' table
+    cur.execute("PRAGMA table_info(targets)")
+    target_cols = {row[1] for row in cur.fetchall()}
+    has_target_nvisit = "nvisit" in target_cols
+    has_target_exptime = "exptime" in target_cols
+
     # 1. Create table schema without secondary indexes (faster bulk insert)
     print("\n1️⃣  Creating table schema 'target_summary'...", flush=True)
     cur.execute("""
@@ -95,6 +119,12 @@ def main():
         bestVelocityError REAL,
         bestSubClass TEXT,
         hasSolution INTEGER,
+        nvisit INTEGER,
+        exptime REAL,
+        has_fits INTEGER DEFAULT 0,
+        fits_path TEXT,
+        has_png INTEGER DEFAULT 0,
+        png_path TEXT,
         PRIMARY KEY (catId, objId, combination)
     );
     """)
@@ -104,8 +134,24 @@ def main():
     print("    (Sorting 2.7M+ fiber_configs by visit DESC to pick latest observation per target)...", flush=True)
     t_pop_start = time.time()
 
-    insert_sql = """
-    INSERT INTO target_summary
+    nvisit_src = "t.nvisit" if has_target_nvisit else "NULL"
+    exptime_src = "t.exptime" if has_target_exptime else "NULL"
+    fits_src = "COALESCE(tf.has_fits, 0)" if has_file_cols else "0"
+    fits_path_src = "tf.fits_path" if has_file_cols else "NULL"
+    png_src = "COALESCE(tf.has_png, 0)" if has_file_cols else "0"
+    png_path_src = "tf.png_path" if has_file_cols else "NULL"
+    join_tf = "LEFT JOIN _temp_target_files tf ON t.catId = tf.catId AND t.objId = tf.objId AND t.combination = tf.combination" if has_file_cols else ""
+
+    insert_sql = f"""
+    INSERT INTO target_summary (
+        catId, objId, combination, objGroup,
+        obCode, targetTypeName, fiberStatusName, ra, dec,
+        classificationName, probaGalaxy, probaStar, probaQSO,
+        bestRedshift, bestRedshiftError, bestVelocity, bestVelocityError,
+        bestSubClass, hasSolution,
+        nvisit, exptime,
+        has_fits, fits_path, has_png, png_path
+    )
     SELECT 
         t.catId,
         t.objId,
@@ -125,15 +171,24 @@ def main():
         t.bestVelocity,
         t.bestVelocityError,
         t.bestSubClass,
-        t.hasSolution
+        t.hasSolution,
+        {nvisit_src},
+        {exptime_src},
+        {fits_src},
+        {fits_path_src},
+        {png_src},
+        {png_path_src}
     FROM targets t
     LEFT JOIN (
         SELECT catId, objId, obCode, targetTypeName, fiberStatusName, ra, dec,
                ROW_NUMBER() OVER (PARTITION BY catId, objId ORDER BY visit DESC) as rn
         FROM fiber_configs
-    ) fc ON t.catId = fc.catId AND t.objId = fc.objId AND fc.rn = 1;
+    ) fc ON t.catId = fc.catId AND t.objId = fc.objId AND fc.rn = 1
+    {join_tf};
     """
     cur.execute(insert_sql)
+    if has_file_cols:
+        cur.execute("DROP TABLE IF EXISTS _temp_target_files")
     conn.commit()
     t_pop = time.time() - t_pop_start
     print(f"    ✅ Populated in {t_pop:.2f}s", flush=True)
@@ -146,6 +201,10 @@ def main():
         ("idx_ts_obcode", "obCode"),
         ("idx_ts_catid", "catId"),
         ("idx_ts_coords", "ra, dec"),
+        ("idx_ts_nvisit", "nvisit"),
+        ("idx_ts_exptime", "exptime"),
+        ("idx_ts_has_fits", "has_fits"),
+        ("idx_ts_has_png", "has_png"),
     ]
     for idx_name, cols in indexes:
         t_idx_start = time.time()

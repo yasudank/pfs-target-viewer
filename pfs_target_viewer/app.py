@@ -715,6 +715,8 @@ def get_targets(
         "probaGalaxy": "t.probaGalaxy",
         "probaQSO": "t.probaQSO",
         "probaStar": "t.probaStar",
+        "nvisit": "t.nvisit",
+        "exptime": "t.exptime",
     }
     sort_col = allowed_sort_fields.get(sort_by, "t.objId")
     sort_order = "DESC" if order.lower() == "desc" else "ASC"
@@ -760,7 +762,15 @@ def get_targets(
     cur = conn.cursor()
     try:
         tbl = get_summary_table(conn)
-        has_file_cols = check_db_file_columns(conn)
+        cur.execute(f"PRAGMA table_info({tbl})")
+        tbl_cols = {row[1] for row in cur.fetchall()}
+        has_file_cols = "has_fits" in tbl_cols and "fits_path" in tbl_cols
+        extra_cols = []
+        if "nvisit" in tbl_cols:
+            extra_cols.append("t.nvisit")
+        if "exptime" in tbl_cols:
+            extra_cols.append("t.exptime")
+        extra_select = (", ".join(extra_cols) + ",") if extra_cols else ""
 
         if has_file_cols:
             if has_fits is not None:
@@ -787,6 +797,7 @@ def get_targets(
                 t.classificationName, t.probaGalaxy, t.probaStar, t.probaQSO,
                 t.bestRedshift, t.bestRedshiftError, t.bestVelocity, t.bestVelocityError,
                 t.bestSubClass, t.hasSolution,
+                {extra_select}
                 {file_select}
                 1 AS _dummy
             FROM {tbl} t
@@ -1602,6 +1613,8 @@ KNOWN_COLUMN_DESCRIPTIONS = {
     "png_path": "Relative path to PNG spectrum image",
     "combination": "Coadd combination key (e.g. brn_run28)",
     "objGroup": "Object group ID within coadd",
+    "nvisit": "Number of coadded observation visits for this target",
+    "exptime": "Total on-sky exposure time in seconds across coadded visits",
     "visit": "Observation Visit ID",
     "fiberId": "Spectrograph Fiber ID (1-2394)",
     "lineName": "Emission / absorption line identifier (e.g. [OII]3727, Halpha)",

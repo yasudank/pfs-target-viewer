@@ -451,6 +451,24 @@ def main():
             if not args.skip_png:
                 rec["has_png"] = 1 if saved_png_rel else 0
                 rec["png_path"] = saved_png_rel
+
+            # Extract nvisit and exptime from observations
+            if hasattr(pfsObj, "observations") and pfsObj.observations is not None:
+                obs = pfsObj.observations
+                visits = getattr(obs, "visit", None)
+                exp_times = getattr(obs, "expTime", None)
+                if visits is not None and len(visits) > 0:
+                    rec["nvisit"] = len(set(visits))
+                    if exp_times is not None and len(exp_times) == len(visits):
+                        vexp = {}
+                        for v, exp in zip(visits, exp_times):
+                            if exp is not None and not np.isnan(exp):
+                                exp_val = float(exp)
+                                if v not in vexp or exp_val > vexp[v]:
+                                    vexp[v] = exp_val
+                        if vexp:
+                            rec["exptime"] = round(sum(vexp.values()), 3)
+
             db_updates.append(rec)
 
         processed_count += 1
@@ -471,6 +489,10 @@ def main():
                 update_cols.extend(["has_fits = :has_fits", "fits_path = :fits_path"])
             if not args.skip_png and "has_png" in cols:
                 update_cols.extend(["has_png = :has_png", "png_path = :png_path"])
+            if "nvisit" in cols:
+                update_cols.append("nvisit = COALESCE(:nvisit, nvisit)")
+            if "exptime" in cols:
+                update_cols.append("exptime = COALESCE(:exptime, exptime)")
 
             if update_cols:
                 set_clause = ", ".join(update_cols)

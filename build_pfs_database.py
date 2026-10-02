@@ -114,11 +114,15 @@ CREATE TABLE IF NOT EXISTS targets (
     bestVelocity REAL,
     bestVelocityError REAL,
     bestSubClass TEXT,
+    nvisit INTEGER,
+    exptime REAL,
     PRIMARY KEY (catId, objId, combination),
     FOREIGN KEY (catId, combination, objGroup) REFERENCES coadd_groups (catId, combination, objGroup)
 );
 CREATE INDEX IF NOT EXISTS idx_targets_classification ON targets (classificationName);
 CREATE INDEX IF NOT EXISTS idx_targets_best_redshift ON targets (bestRedshift);
+CREATE INDEX IF NOT EXISTS idx_targets_nvisit ON targets (nvisit);
+CREATE INDEX IF NOT EXISTS idx_targets_exptime ON targets (exptime);
 CREATE INDEX IF NOT EXISTS idx_fiber_configs_obcode ON fiber_configs (obCode);
 
 CREATE TABLE IF NOT EXISTS solver_results (
@@ -232,6 +236,8 @@ CREATE TABLE IF NOT EXISTS target_summary (
     bestVelocityError REAL,
     bestSubClass TEXT,
     hasSolution INTEGER,
+    nvisit INTEGER,
+    exptime REAL,
     has_fits INTEGER DEFAULT 0,
     fits_path TEXT,
     has_png INTEGER DEFAULT 0,
@@ -243,6 +249,8 @@ CREATE INDEX IF NOT EXISTS idx_ts_best_redshift ON target_summary (bestRedshift)
 CREATE INDEX IF NOT EXISTS idx_ts_obcode ON target_summary (obCode);
 CREATE INDEX IF NOT EXISTS idx_ts_catid ON target_summary (catId);
 CREATE INDEX IF NOT EXISTS idx_ts_coords ON target_summary (ra, dec);
+CREATE INDEX IF NOT EXISTS idx_ts_nvisit ON target_summary (nvisit);
+CREATE INDEX IF NOT EXISTS idx_ts_exptime ON target_summary (exptime);
 CREATE INDEX IF NOT EXISTS idx_ts_has_fits ON target_summary (has_fits);
 CREATE INDEX IF NOT EXISTS idx_ts_has_png ON target_summary (has_png);
 
@@ -351,6 +359,13 @@ def load_redshift_candidates(butler, conn, limit=None):
         coZCands = butler.get('pfsCoZCandidates', dataId)
         targets = list(coZCands.keys())
 
+        # Load pfsCoadd for this group to extract nvisit and exptime per target
+        pfsCoadd = None
+        try:
+            pfsCoadd = butler.get('pfsCoadd', dataId)
+        except Exception as e:
+            print(f"  Warning: Failed to load pfsCoadd for {dataId}: {e}")
+
         cur.execute(
             "INSERT OR REPLACE INTO coadd_groups (catId, combination, objGroup, nTargets) "
             "VALUES (?, ?, ?, ?)",
@@ -380,6 +395,32 @@ def load_redshift_candidates(butler, conn, limit=None):
             bestVelocityError = _pyval(bestParams.get("velocityError"))
             bestSubClass = bestParams.get("subClass")
 
+            # Extract nvisit and exptime from pfsCoadd observations
+            nvisit = None
+            exptime = None
+            if pfsCoadd is not None:
+                pfsObj = None
+                try:
+                    if target in pfsCoadd:
+                        pfsObj = pfsCoadd[target]
+                except Exception:
+                    pass
+                if pfsObj is not None and getattr(pfsObj, 'observations', None) is not None:
+                    obs = pfsObj.observations
+                    visits = getattr(obs, 'visit', None)
+                    exp_times = getattr(obs, 'expTime', None)
+                    if visits is not None and len(visits) > 0:
+                        nvisit = len(set(visits))
+                        if exp_times is not None and len(exp_times) == len(visits):
+                            visit_exptimes = {}
+                            for v, exp in zip(visits, exp_times):
+                                if exp is not None and not np.isnan(exp):
+                                    exp_val = float(exp)
+                                    if v not in visit_exptimes or exp_val > visit_exptimes[v]:
+                                        visit_exptimes[v] = exp_val
+                            if visit_exptimes:
+                                exptime = round(sum(visit_exptimes.values()), 3)
+
             targetRows.append((
                 catId, objId, combination, objGroup,
                 int(target.tract), str(target.patch),
@@ -395,6 +436,7 @@ def load_redshift_candidates(butler, conn, limit=None):
                 bestRedshift, bestRedshiftError,
                 bestVelocity, bestVelocityError,
                 bestSubClass,
+                nvisit, exptime,
             ))
 
             for objectType in ("galaxy", "qso", "star"):
@@ -464,8 +506,9 @@ def load_redshift_candidates(butler, conn, limit=None):
                  initErrorCode, initErrorMessage, initWarningValue, initWarningName,
                  classificationName, probaGalaxy, probaStar, probaQSO,
                  classificationErrorCode, classificationWarningValue, classificationWarningName,
-                 bestRedshift, bestRedshiftError, bestVelocity, bestVelocityError, bestSubClass)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 bestRedshift, bestRedshiftError, bestVelocity, bestVelocityError, bestSubClass,
+                 nvisit, exptime)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             targetRows,
         )
@@ -547,6 +590,7 @@ def populate_target_summary(conn):
             classificationName, probaGalaxy, probaStar, probaQSO,
             bestRedshift, bestRedshiftError, bestVelocity, bestVelocityError,
             bestSubClass, hasSolution,
+            nvisit, exptime,
             has_fits, fits_path, has_png, png_path
         )
         SELECT 
@@ -555,6 +599,7 @@ def populate_target_summary(conn):
             t.classificationName, t.probaGalaxy, t.probaStar, t.probaQSO,
             t.bestRedshift, t.bestRedshiftError, t.bestVelocity, t.bestVelocityError,
             t.bestSubClass, t.hasSolution,
+            t.nvisit, t.exptime,
             COALESCE(tf.has_fits, 0), tf.fits_path, COALESCE(tf.has_png, 0), tf.png_path
         FROM targets t
         LEFT JOIN (

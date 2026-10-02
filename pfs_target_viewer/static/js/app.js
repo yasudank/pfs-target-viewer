@@ -1848,7 +1848,7 @@ function renderTargetsTable(targets) {
         <td class="col-target ${targetHidden}" data-col="target">
           <span class="target-id">${t.objId}</span>
           ${t.obCode ? `<span class="obcode-badge">${t.obCode}</span>` : ""}
-          <div class="cat-id-muted">${(state.filterMode !== "sql" || !(state.sqlCustomColumns && state.sqlCustomColumns.includes("combination"))) && t.combination ? `catId: ${t.catId} &bull; ${t.combination}` : `catId: ${t.catId}`}</div>
+          <div class="cat-id-muted">${(state.filterMode !== "sql" || !(state.sqlCustomColumns && state.sqlCustomColumns.includes("combination"))) && t.combination ? `catId: ${t.catId} &bull; ${t.combination}` : `catId: ${t.catId}`}${t.nvisit ? ` &bull; ${t.nvisit}v${t.exptime !== null && t.exptime !== undefined ? ` (${t.exptime.toFixed(0)}s)` : ''}` : ''}</div>
         </td>
         <td class="col-coords ${coordsHidden}" data-col="coords">
           <div class="coords-text">RA: ${raStr}</div>
@@ -3050,7 +3050,8 @@ window.openTargetDetails = async function (catId, objId) {
     state.activeTarget = data.target;
 
     elements.detailsModalTitle.textContent = `Target Details: ${data.target.obCode || ""}`;
-    elements.detailsModalSub.textContent = `objId: ${objId} | catId: ${catId} | combination: ${data.target.combination || ""}`;
+    const obsMeta = data.target.nvisit ? ` | visits: ${data.target.nvisit}${data.target.exptime !== null && data.target.exptime !== undefined ? ` | expTime: ${Number(data.target.exptime).toFixed(1)}s` : ""}` : "";
+    elements.detailsModalSub.textContent = `objId: ${objId} | catId: ${catId} | combination: ${data.target.combination || ""}${obsMeta}`;
 
     // 1. Redshift Candidates Table
     if (data.redshift_candidates && data.redshift_candidates.length > 0) {

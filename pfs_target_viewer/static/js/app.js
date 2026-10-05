@@ -91,6 +91,7 @@ const state = {
   // Sky Map Scope, Cache & Rotation
   skyScope: "all", // "page" or "all"
   skyCentralRa: 180, // Default central meridian: 180 deg (12h)
+  skyUiRevision: "sky_default", // Persistent layout revision to preserve zoom/pan across renders
   spatialFilter: null, // { min_ra, max_ra, min_dec, max_dec } or null
   masterSkyTargets: null, // Unconditional master full-sky coordinate list with all attributes (~217k items)
   allSkyTargets: null, // Plotted coordinates filtered from masterSkyTargets
@@ -1710,6 +1711,7 @@ function initEventListeners() {
   // Sky Map Controls & Rotation
   if (elements.skyMapResetBtn) {
     elements.skyMapResetBtn.addEventListener("click", () => {
+      state.skyUiRevision = Date.now().toString();
       if (elements.skyPlotly) {
         Plotly.relayout(elements.skyPlotly, {
           "xaxis.range": [3.25, -3.25],
@@ -2731,6 +2733,7 @@ function renderSkyMap(pageTargets) {
       elements.skyPlotly,
       getMollweideGraticules(state.skyCentralRa),
       {
+        uirevision: state.skyUiRevision,
         plot_bgcolor: "#0b1120",
         paper_bgcolor: "#111827",
         annotations: [
@@ -2767,6 +2770,7 @@ function renderSkyMap(pageTargets) {
       elements.skyPlotly,
       getMollweideGraticules(state.skyCentralRa),
       {
+        uirevision: state.skyUiRevision,
         plot_bgcolor: "#0b1120",
         paper_bgcolor: "#111827",
         annotations: [
@@ -2897,6 +2901,7 @@ function renderSkyMap(pageTargets) {
   }
 
   const layout = {
+    uirevision: state.skyUiRevision,
     paper_bgcolor: "#111827",
     plot_bgcolor: "#0b1120",
     margin: { l: 15, r: 15, t: 25, b: 15 },

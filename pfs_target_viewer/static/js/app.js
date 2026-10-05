@@ -92,6 +92,8 @@ const state = {
   skyScope: "all", // "page" or "all"
   skyCentralRa: 180, // Default central meridian: 180 deg (12h)
   skyUiRevision: "sky_default", // Persistent layout revision to preserve zoom/pan across renders
+  skySavedViewRange: null, // Saved { x: [x0, x1], y: [y0, y1] } zoom/pan viewport
+  skyResetRequested: false, // Flag indicating user clicked Reset to return to full sky
   spatialFilter: null, // { min_ra, max_ra, min_dec, max_dec } or null
   masterSkyTargets: null, // Unconditional master full-sky coordinate list with all attributes (~217k items)
   allSkyTargets: null, // Plotted coordinates filtered from masterSkyTargets
@@ -1711,6 +1713,8 @@ function initEventListeners() {
   // Sky Map Controls & Rotation
   if (elements.skyMapResetBtn) {
     elements.skyMapResetBtn.addEventListener("click", () => {
+      state.skyResetRequested = true;
+      state.skySavedViewRange = null;
       state.skyUiRevision = Date.now().toString();
       if (elements.skyPlotly) {
         Plotly.relayout(elements.skyPlotly, {
@@ -1794,6 +1798,11 @@ function initEventListeners() {
           alert("Currently displaying full sky view. Zoom in or pan to an area of interest first, then click 'Filter Table by View'.");
         }
         return;
+      }
+      // Save current zoomed/panned view range so it is never lost on re-renders
+      const curView = getCurrentSkyViewRange();
+      if (curView) {
+        state.skySavedViewRange = curView;
       }
       applySpatialFilter(bounds);
     });
@@ -2308,6 +2317,18 @@ function unprojectMollweide(x, y, ra0Deg = 180) {
   return { ra, dec, deltaLambdaDeg, insideEllipse };
 }
 
+function getCurrentSkyViewRange() {
+  const el = elements.skyPlotly;
+  if (!el || !el._fullLayout) return null;
+  const xa = el._fullLayout.xaxis;
+  const ya = el._fullLayout.yaxis;
+  if (!xa || !ya || !Array.isArray(xa.range) || !Array.isArray(ya.range)) return null;
+  return {
+    x: [xa.range[0], xa.range[1]],
+    y: [ya.range[0], ya.range[1]],
+  };
+}
+
 function getVisibleSkyBounds() {
   const el = elements.skyPlotly;
   if (!el || !el._fullLayout) return null;
@@ -2700,6 +2721,20 @@ function getMollweideAnnotations(ra0Deg = 180) {
 function renderSkyMap(pageTargets) {
   if (!elements.skyPlotly) return;
 
+  // Compute current view range to preserve zoom & pan across renders
+  let currentXRange = [3.25, -3.25];
+  let currentYRange = [-1.625, 1.625];
+  if (state.skyResetRequested) {
+    state.skyResetRequested = false;
+    state.skySavedViewRange = null;
+  } else {
+    const curRange = state.skySavedViewRange || getCurrentSkyViewRange();
+    if (curRange) {
+      currentXRange = [curRange.x[0], curRange.x[1]];
+      currentYRange = [curRange.y[0], curRange.y[1]];
+    }
+  }
+
   // Update scope button active state
   if (elements.skyScopePageBtn && elements.skyScopeAllBtn) {
     if (state.skyScope === "all") {
@@ -2748,8 +2783,8 @@ function renderSkyMap(pageTargets) {
             font: { color: "#9ca3af", size: 14 },
           },
         ],
-        xaxis: { range: [3.25, -3.25], visible: false },
-        yaxis: { range: [-1.625, 1.625], scaleanchor: "x", scaleratio: 1, visible: false },
+        xaxis: { range: currentXRange, visible: false },
+        yaxis: { range: currentYRange, scaleanchor: "x", scaleratio: 1, visible: false },
         margin: { l: 15, r: 15, t: 25, b: 15 },
       },
       { responsive: true, displayModeBar: false }
@@ -2785,8 +2820,8 @@ function renderSkyMap(pageTargets) {
             font: { color: "#9ca3af", size: 14 },
           },
         ],
-        xaxis: { range: [3.25, -3.25], visible: false },
-        yaxis: { range: [-1.625, 1.625], scaleanchor: "x", scaleratio: 1, visible: false },
+        xaxis: { range: currentXRange, visible: false },
+        yaxis: { range: currentYRange, scaleanchor: "x", scaleratio: 1, visible: false },
         margin: { l: 15, r: 15, t: 25, b: 15 },
       },
       { responsive: true, displayModeBar: false }
@@ -2920,20 +2955,22 @@ function renderSkyMap(pageTargets) {
     },
     annotations: getMollweideAnnotations(state.skyCentralRa),
     xaxis: {
-      range: [3.25, -3.25], // Astronomical standard: RA increases to the left
+      range: currentXRange, // Astronomical standard: RA increases to the left
       showgrid: false,
       zeroline: false,
       showticklabels: false,
       fixedrange: false,
+      autorange: false,
     },
     yaxis: {
-      range: [-1.625, 1.625],
+      range: currentYRange,
       scaleanchor: "x",
       scaleratio: 1,
       showgrid: false,
       zeroline: false,
       showticklabels: false,
       fixedrange: false,
+      autorange: false,
     },
   };
 
@@ -2946,6 +2983,28 @@ function renderSkyMap(pageTargets) {
   };
 
   Plotly.react(elements.skyPlotly, traces, layout, config);
+
+  // If a view range was saved (e.g. Filter Table by View), enforce it via relayout
+  if (state.skySavedViewRange) {
+    Plotly.relayout(elements.skyPlotly, {
+      "xaxis.range": state.skySavedViewRange.x,
+      "yaxis.range": state.skySavedViewRange.y,
+      "xaxis.autorange": false,
+      "yaxis.autorange": false,
+    });
+  }
+
+  if (!elements.skyPlotly._hasRelayoutHandler) {
+    elements.skyPlotly._hasRelayoutHandler = true;
+    elements.skyPlotly.on("plotly_relayout", () => {
+      if (!state.skyResetRequested && state.spatialFilter) {
+        const cur = getCurrentSkyViewRange();
+        if (cur) {
+          state.skySavedViewRange = cur;
+        }
+      }
+    });
+  }
 
   if (!elements.skyPlotly._hasClickHandler) {
     elements.skyPlotly._hasClickHandler = true;

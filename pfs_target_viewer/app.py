@@ -2015,17 +2015,16 @@ def execute_sql_query(req: SqlQueryRequest):
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Query Execution Error: {e}")
 
-        raw_rows = cur.fetchall()
-        total = len(raw_rows)
-
-        # Enforce memory safety cap on cached SQL results (300,000 rows accommodates full survey while protecting against runaway queries)
-        MAX_SQL_CACHE_ROWS = 300_000
-        if total > MAX_SQL_CACHE_ROWS:
+        # Enforce memory safety cap on cached SQL results (fetch up to MAX_SQL_CACHE_ROWS + 1 to avoid loading unbounded rows)
+        raw_rows = cur.fetchmany(MAX_SQL_CACHE_ROWS + 1)
+        if len(raw_rows) > MAX_SQL_CACHE_ROWS:
+            del raw_rows
             raise HTTPException(
                 status_code=400,
-                detail=f"Query returned {total:,} rows, exceeding the in-memory cache safety limit of {MAX_SQL_CACHE_ROWS:,} rows. "
+                detail=f"Query returned more than {MAX_SQL_CACHE_ROWS:,} rows, exceeding the in-memory cache safety limit. "
                        f"Please add a WHERE clause or LIMIT to restrict your query results."
             )
+        total = len(raw_rows)
 
         pages = max(1, math.ceil(total / limit)) if total > 0 else 1
 

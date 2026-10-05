@@ -2096,6 +2096,74 @@ def get_database_schema():
         conn.close()
 
 
+_SPECTRAL_LINES_CACHE: Optional[dict] = None
+
+
+@app.get("/api/sql/lines")
+def get_spectral_lines():
+    """Retrieve metadata catalog of measured spectral lines in line_measurements."""
+    global _SPECTRAL_LINES_CACHE
+    if _SPECTRAL_LINES_CACHE is not None:
+        return _SPECTRAL_LINES_CACHE
+
+    active_db = DB_PATH or ""
+    candidate_cache_paths = [
+        os.path.join(os.path.dirname(active_db), "spectral_lines_cache.json") if active_db else "",
+        os.path.join(DATA_DIR, "spectral_lines_cache.json"),
+        os.path.join(os.path.dirname(__file__), "..", "extracted_targets", "spectral_lines_cache.json"),
+        os.path.join(os.path.dirname(__file__), "..", "spectral_lines_cache.json"),
+    ]
+
+    db_mtime = os.path.getmtime(active_db) if (active_db and os.path.exists(active_db)) else 0
+    for p in candidate_cache_paths:
+        if p and os.path.exists(p) and os.path.getmtime(p) >= db_mtime:
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    _SPECTRAL_LINES_CACHE = json.load(f)
+                return _SPECTRAL_LINES_CACHE
+            except Exception:
+                pass
+
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT lineName, objectType, count(*) as count, round(avg(lineWave), 2) as avgWave,
+                   round(min(lineWave), 2) as minWave, round(max(lineWave), 2) as maxWave
+            FROM line_measurements
+            WHERE lineName IS NOT NULL AND lineName != ''
+            GROUP BY lineName, objectType
+            ORDER BY count DESC
+        """)
+        rows = cur.fetchall()
+        lines = []
+        for r in rows:
+            lines.append({
+                "lineName": r["lineName"],
+                "objectType": r["objectType"],
+                "count": r["count"],
+                "avgWave": r["avgWave"],
+                "minWave": r["minWave"],
+                "maxWave": r["maxWave"],
+            })
+        _SPECTRAL_LINES_CACHE = {
+            "total_lines": len(lines),
+            "lines": lines,
+        }
+
+        save_path = candidate_cache_paths[0] or candidate_cache_paths[1]
+        if save_path:
+            try:
+                with open(save_path, "w", encoding="utf-8") as f:
+                    json.dump(_SPECTRAL_LINES_CACHE, f, indent=2)
+            except Exception:
+                pass
+
+        return _SPECTRAL_LINES_CACHE
+    finally:
+        conn.close()
+
+
 @app.post("/api/sql/validate")
 def validate_sql(req: SqlValidateRequest):
     """Validate SQL syntax and safety without executing the full query."""

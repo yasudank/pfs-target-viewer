@@ -2648,5 +2648,95 @@ th.col-hidden, td.col-hidden {
   vertical-align: middle;
 }
 
+/* --------------------------------------------------------------------------
+   Spectral Lines Catalog & Schema Explorer Quick Button
+   -------------------------------------------------------------------------- */
+.schema-col-catalog-btn {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: var(--radius-sm);
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 1px 7px;
+  margin-left: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  transition: all 0.15s ease;
+  vertical-align: middle;
+}
 
+.schema-col-catalog-btn:hover {
+  background: rgba(56, 189, 248, 0.35);
+  border-color: #38bdf8;
+  color: #ffffff;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.4);
+  transform: translateY(-1px);
+}
 
+.line-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.line-name-cell:hover {
+  color: #38bdf8;
+}
+
+.line-name-cell .copy-hint {
+  font-size: 0.7rem;
+  opacity: 0;
+  transition: opacity 0.15s;
+  color: var(--text-muted);
+}
+
+.line-name-cell:hover .copy-hint {
+  opacity: 1;
+}
+
+.badge-galaxy {
+  background: rgba(59, 130, 246, 0.2);
+  color: #93c5fd;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+}
+
+.badge-qso {
+  background: rgba(168, 85, 247, 0.2);
+  color: #d8b4fe;
+  border: 1px solid rgba(168, 85, 247, 0.35);
+}
+
+.badge-star {
+  background: rgba(234, 179, 8, 0.2);
+  color: #fde047;
+  border: 1px solid rgba(234, 179, 8, 0.35);
+}
+
+.btn-insert-line {
+  background: rgba(16, 185, 129, 0.18);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  border-radius: var(--radius-sm);
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  transition: all 0.15s ease;
+}
+
+.btn-insert-line:hover {
+  background: rgba(16, 185, 129, 0.35);
+  border-color: #34d399;
+  color: #ffffff;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.35);
+}

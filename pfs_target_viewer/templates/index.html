@@ -154,6 +154,7 @@
                     <option value="spectra_only">📊 Science Targets with FITS Spectra</option>
                   </select>
                 </div>
+                <button type="button" id="openSpectralLinesBtn" class="btn btn-sm btn-outline-info" title="Browse all spectral lines in line_measurements">🔬 Spectral Lines</button>
                 <button type="button" id="clearSqlBtn" class="btn btn-sm btn-secondary" title="Clear query editor">🧹 Clear</button>
               </div>
             </div>
@@ -760,6 +761,68 @@ ORDER BY bestRedshift DESC</textarea>
         </details>
       </div>
 
+    </div>
+  </div>
+
+  <!-- ==================================================================== -->
+  <!-- MODAL 4: Spectral Lines Catalog Modal                               -->
+  <!-- ==================================================================== -->
+  <div class="modal-backdrop" id="spectralLinesModal" style="display: none;">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-header">
+        <div class="modal-title-box">
+          <h3 id="spectralLinesModalTitle">🔬 Spectral Line Catalog</h3>
+          <span class="modal-sub-id" id="spectralLinesModalSub">All measured emission &amp; absorption lines from <code>line_measurements</code></span>
+        </div>
+        <button class="modal-close" id="spectralLinesModalClose">&times;</button>
+      </div>
+
+      <div class="modal-body" style="padding: 1.25rem 1.5rem; display: flex; flex-direction: column; gap: 0.85rem; overflow: hidden; max-height: calc(85vh - 70px);">
+        <!-- Search and Filters Bar -->
+        <div class="spectral-lines-toolbar" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+          <div style="flex: 1; min-width: 220px; position: relative;">
+            <input type="text" id="spectralLineSearchInput" placeholder="Filter lines (e.g. OII, Halpha, LyA, CIV, [OIII])..." class="custom-input" style="width: 100%; padding-left: 2rem;">
+            <span style="position: absolute; left: 0.65rem; top: 50%; transform: translateY(-50%); opacity: 0.5; pointer-events: none;">🔍</span>
+          </div>
+
+          <!-- Object Type Filter Pills -->
+          <div class="btn-group" role="group" id="lineTypeFilterGroup">
+            <button type="button" class="btn btn-sm btn-secondary active" data-type="ALL">All (<span id="lineCountAll">0</span>)</button>
+            <button type="button" class="btn btn-sm btn-secondary" data-type="GALAXY">Galaxy (<span id="lineCountGalaxy">0</span>)</button>
+            <button type="button" class="btn btn-sm btn-secondary" data-type="QSO">QSO (<span id="lineCountQso">0</span>)</button>
+          </div>
+
+          <div style="font-size: 0.82rem; color: var(--text-muted); margin-left: auto;">
+            <span id="spectralLinesVisibleCountBadge">0</span> lines shown
+          </div>
+        </div>
+
+        <div style="font-size: 0.8rem; color: #94a3b8; background: rgba(30, 41, 59, 0.6); padding: 0.5rem 0.8rem; border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,0.06); display: flex; justify-content: space-between; align-items: center;">
+          <span>💡 <strong>Tip:</strong> Click <strong>"＋ Insert SQL"</strong> to paste into your query, or click any line name to copy it.</span>
+          <span style="font-size: 0.75rem; color: #64748b;">Obs. Wave = Observed central wavelength [nm]</span>
+        </div>
+
+        <!-- Scrollable Table of Lines -->
+        <div class="table-responsive" style="max-height: 52vh; overflow-y: auto; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+          <table class="detail-subtable" style="width: 100%; margin: 0;">
+            <thead style="position: sticky; top: 0; background: var(--bg-surface); z-index: 2;">
+              <tr>
+                <th style="cursor: pointer; user-select: none;" id="th_sort_lineName">Line Name <span id="sort_icon_lineName"></span></th>
+                <th style="cursor: pointer; user-select: none;" id="th_sort_objectType">Type <span id="sort_icon_objectType"></span></th>
+                <th style="cursor: pointer; user-select: none; text-align: right;" id="th_sort_count">DB Count <span id="sort_icon_count">▼</span></th>
+                <th style="cursor: pointer; user-select: none; text-align: right;" id="th_sort_avgWave">Obs. Wave [nm] <span id="sort_icon_avgWave"></span></th>
+                <th style="cursor: pointer; user-select: none; text-align: center;" id="th_sort_waveRange">Obs. Range [nm]</th>
+                <th style="text-align: right; width: 140px;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="spectralLinesTbody">
+              <tr>
+                <td colspan="6" class="text-center text-muted" style="padding: 2rem;">Loading spectral lines...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </div>
 

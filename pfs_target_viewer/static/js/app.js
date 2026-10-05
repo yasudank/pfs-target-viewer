@@ -107,6 +107,13 @@ const state = {
   // SQL Sorting State
   sqlSortBy: null,
   sqlOrder: "asc",
+
+  // Spectral Line Catalog State
+  spectralLinesData: null,
+  spectralLinesSearchQuery: "",
+  spectralLinesTypeFilter: "ALL",
+  spectralLinesSortCol: "count",
+  spectralLinesSortAsc: false,
 };
 
 // DOM Element Selectors
@@ -251,6 +258,18 @@ const elements = {
   plotlyChart: document.getElementById("plotlyChart"),
   obsCount: document.getElementById("obsCount"),
   obsTbody: document.getElementById("obsTbody"),
+
+  // Spectral Lines Catalog Modal
+  openSpectralLinesBtn: document.getElementById("openSpectralLinesBtn"),
+  spectralLinesModal: document.getElementById("spectralLinesModal"),
+  spectralLinesModalClose: document.getElementById("spectralLinesModalClose"),
+  spectralLineSearchInput: document.getElementById("spectralLineSearchInput"),
+  spectralLinesTbody: document.getElementById("spectralLinesTbody"),
+  lineTypeFilterGroup: document.getElementById("lineTypeFilterGroup"),
+  spectralLinesVisibleCountBadge: document.getElementById("spectralLinesVisibleCountBadge"),
+  lineCountAll: document.getElementById("lineCountAll"),
+  lineCountGalaxy: document.getElementById("lineCountGalaxy"),
+  lineCountQso: document.getElementById("lineCountQso"),
 
   // Sky Map
   skyMapCard: document.getElementById("skyMapCard"),
@@ -428,12 +447,17 @@ function renderSchemaTree(filterText = "") {
           ${matchingCols.map((c) => {
             const pkClass = (c.pk || c.primary_key) ? "primary-key" : "";
             const tooltip = `${tblName}.${c.name} (${c.type})${c.description ? ' - ' + c.description : ''}`;
+            const isLineNameCol = tblName === "line_measurements" && c.name === "lineName";
+            const extraBtn = isLineNameCol
+              ? `<button type="button" class="schema-col-catalog-btn" onclick="openSpectralLinesModal(event)" title="Browse all spectral lines in database">🔬 85+ lines</button>`
+              : "";
             return `
               <div class="schema-col-item ${pkClass}" 
                    title="${tooltip}" 
                    onclick="insertSchemaColumn('${c.name}', event)">
                 <div class="schema-col-left">
                   <span class="schema-col-name">${c.name}</span>
+                  ${extraBtn}
                 </div>
                 <div class="schema-col-right">
                   <span class="schema-col-type">${c.type}</span>
@@ -513,6 +537,184 @@ function insertTextAtCursor(textarea, text) {
   textarea.selectionStart = textarea.selectionEnd = start + text.length;
   textarea.focus();
 }
+
+// ----------------------------------------------------------------------------
+// Spectral Lines Catalog Modal & Reference Functions
+// ----------------------------------------------------------------------------
+window.openSpectralLinesModal = async function(event = null) {
+  if (event) event.stopPropagation();
+  if (elements.spectralLinesModal) {
+    elements.spectralLinesModal.style.display = "flex";
+  }
+  if (!state.spectralLinesData) {
+    try {
+      if (elements.spectralLinesTbody) {
+        elements.spectralLinesTbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted" style="padding: 2rem;">Loading spectral lines catalog...</td></tr>`;
+      }
+      const res = await fetch("/api/sql/lines");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      state.spectralLinesData = data;
+
+      // Update counters in pills
+      const lines = data.lines || [];
+      const galCount = lines.filter((l) => l.objectType === "GALAXY").length;
+      const qsoCount = lines.filter((l) => l.objectType === "QSO").length;
+      if (elements.lineCountAll) elements.lineCountAll.textContent = lines.length;
+      if (elements.lineCountGalaxy) elements.lineCountGalaxy.textContent = galCount;
+      if (elements.lineCountQso) elements.lineCountQso.textContent = qsoCount;
+    } catch (e) {
+      console.error("Failed loading spectral lines:", e);
+      if (elements.spectralLinesTbody) {
+        elements.spectralLinesTbody.innerHTML = `<tr><td colspan="6" class="text-center text-danger" style="padding: 2rem;">Error loading lines: ${e.message}</td></tr>`;
+      }
+      return;
+    }
+  }
+  renderSpectralLinesTable();
+  if (elements.spectralLineSearchInput) {
+    elements.spectralLineSearchInput.focus();
+  }
+};
+
+window.closeSpectralLinesModal = function() {
+  if (elements.spectralLinesModal) {
+    elements.spectralLinesModal.style.display = "none";
+  }
+};
+
+function renderSpectralLinesTable() {
+  if (!state.spectralLinesData || !elements.spectralLinesTbody) return;
+  const allLines = state.spectralLinesData.lines || [];
+  const q = (state.spectralLinesSearchQuery || "").trim().toLowerCase();
+  const typeFilter = state.spectralLinesTypeFilter || "ALL";
+
+  let filtered = allLines.filter((l) => {
+    if (typeFilter !== "ALL" && l.objectType !== typeFilter) return false;
+    if (q) {
+      const matchName = (l.lineName || "").toLowerCase().includes(q);
+      const matchType = (l.objectType || "").toLowerCase().includes(q);
+      const matchWave = l.avgWave != null && String(l.avgWave).includes(q);
+      if (!matchName && !matchType && !matchWave) return false;
+    }
+    return true;
+  });
+
+  // Sorting
+  const sortCol = state.spectralLinesSortCol || "count";
+  const sortAsc = state.spectralLinesSortAsc;
+  filtered.sort((a, b) => {
+    let va = a[sortCol];
+    let vb = b[sortCol];
+    if (typeof va === "string") {
+      const cmp = va.localeCompare(vb);
+      return sortAsc ? cmp : -cmp;
+    }
+    va = va != null ? va : 0;
+    vb = vb != null ? vb : 0;
+    return sortAsc ? va - vb : vb - va;
+  });
+
+  // Update sort indicators on headers
+  ["lineName", "objectType", "count", "avgWave"].forEach((col) => {
+    const iconEl = document.getElementById(`sort_icon_${col}`);
+    if (iconEl) {
+      iconEl.textContent = sortCol === col ? (sortAsc ? "▲" : "▼") : "";
+    }
+  });
+
+  if (elements.spectralLinesVisibleCountBadge) {
+    elements.spectralLinesVisibleCountBadge.textContent = filtered.length;
+  }
+
+  if (filtered.length === 0) {
+    elements.spectralLinesTbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted" style="padding: 2rem;">No matching lines found for query "${escapeHtml(q)}".</td></tr>`;
+    return;
+  }
+
+  const rowsHtml = filtered.map((l) => {
+    const typeBadgeClass = l.objectType === "GALAXY" ? "badge-galaxy" : (l.objectType === "QSO" ? "badge-qso" : "badge-star");
+    const countStr = l.count != null ? l.count.toLocaleString() : "-";
+    const avgWaveStr = l.avgWave != null ? l.avgWave.toFixed(2) : "-";
+    const minWave = l.minWave != null ? l.minWave.toFixed(1) : "-";
+    const maxWave = l.maxWave != null ? l.maxWave.toFixed(1) : "-";
+    const rangeStr = `${minWave} ~ ${maxWave}`;
+
+    return `
+      <tr>
+        <td>
+          <span class="line-name-cell" onclick="copySpectralLineName('${l.lineName}', this)" title="Click to copy line name">
+            <strong>${escapeHtml(l.lineName)}</strong>
+            <span class="copy-hint">📋 copy</span>
+          </span>
+        </td>
+        <td><span class="badge ${typeBadgeClass}">${l.objectType}</span></td>
+        <td style="text-align: right; font-family: var(--font-mono); font-size: 0.85rem; color: #bae6fd;">${countStr}</td>
+        <td style="text-align: right; font-family: var(--font-mono); font-size: 0.85rem; color: #facc15;">${avgWaveStr}</td>
+        <td style="text-align: center; font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-muted);">${rangeStr}</td>
+        <td style="text-align: right;">
+          <button type="button" class="btn-insert-line" onclick="insertSpectralLineToQuery('${l.lineName}')" title="Insert into SQL query editor">
+            ＋ Insert SQL
+          </button>
+        </td>
+      </tr>
+    `;
+  }).join("");
+
+  elements.spectralLinesTbody.innerHTML = rowsHtml;
+}
+
+window.sortSpectralLines = function(col) {
+  if (state.spectralLinesSortCol === col) {
+    state.spectralLinesSortAsc = !state.spectralLinesSortAsc;
+  } else {
+    state.spectralLinesSortCol = col;
+    state.spectralLinesSortAsc = (col === "lineName" || col === "objectType");
+  }
+  renderSpectralLinesTable();
+};
+
+window.insertSpectralLineToQuery = function(lineName) {
+  if (!elements.sqlQueryInput) return;
+  const currentSql = elements.sqlQueryInput.value;
+  let snippet = `'${lineName}'`;
+  if (currentSql.includes("lm.")) {
+    snippet = `lm.lineName = '${lineName}'`;
+  } else if (currentSql.includes("line_measurements")) {
+    snippet = `lineName = '${lineName}'`;
+  }
+  insertTextAtCursor(elements.sqlQueryInput, snippet);
+  closeSpectralLinesModal();
+  if (elements.sqlStatusFeedback) {
+    const orig = elements.sqlStatusFeedback.innerHTML;
+    elements.sqlStatusFeedback.innerHTML = `<span class="status-indicator ready" style="color: #34d399;">✓ Inserted ${snippet}</span>`;
+    setTimeout(() => {
+      if (elements.sqlStatusFeedback) elements.sqlStatusFeedback.innerHTML = orig;
+    }, 2500);
+  }
+};
+
+window.copySpectralLineName = async function(lineName, el) {
+  try {
+    await navigator.clipboard.writeText(`'${lineName}'`);
+    if (el) {
+      const hint = el.querySelector(".copy-hint");
+      if (hint) {
+        const orig = hint.textContent;
+        hint.textContent = "Copied!";
+        hint.style.color = "#34d399";
+        hint.style.opacity = "1";
+        setTimeout(() => {
+          hint.textContent = orig;
+          hint.style.color = "";
+          hint.style.opacity = "";
+        }, 1500);
+      }
+    }
+  } catch (e) {
+    console.error("Clipboard error:", e);
+  }
+};
 
 async function validateSql() {
   const query = elements.sqlQueryInput.value.trim();
@@ -1371,6 +1573,37 @@ function initEventListeners() {
   setupModalClose(elements.imageModal, elements.imageModalClose);
   setupModalClose(elements.detailsModal, elements.detailsModalClose, elements.detailsModalCloseBtn);
   setupModalClose(elements.spectrumModal, elements.spectrumModalClose);
+  setupModalClose(elements.spectralLinesModal, elements.spectralLinesModalClose);
+
+  // Spectral Lines Catalog Modal controls
+  if (elements.openSpectralLinesBtn) {
+    elements.openSpectralLinesBtn.addEventListener("click", () => openSpectralLinesModal());
+  }
+
+  if (elements.spectralLineSearchInput) {
+    elements.spectralLineSearchInput.addEventListener("input", (e) => {
+      state.spectralLinesSearchQuery = e.target.value;
+      renderSpectralLinesTable();
+    });
+  }
+
+  if (elements.lineTypeFilterGroup) {
+    elements.lineTypeFilterGroup.querySelectorAll("button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        elements.lineTypeFilterGroup.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        state.spectralLinesTypeFilter = btn.dataset.type || "ALL";
+        renderSpectralLinesTable();
+      });
+    });
+  }
+
+  ["lineName", "objectType", "count", "avgWave"].forEach((col) => {
+    const th = document.getElementById(`th_sort_${col}`);
+    if (th) {
+      th.addEventListener("click", () => sortSpectralLines(col));
+    }
+  });
 
   // Image Modal Navigation (Prev / Next)
   const onImagePrev = () => navigateImagePreview(-1);
@@ -1392,6 +1625,10 @@ function initEventListeners() {
         onImageNext();
       } else if (e.key === "Escape") {
         elements.imageModal.style.display = "none";
+      }
+    } else if (elements.spectralLinesModal && elements.spectralLinesModal.style.display !== "none") {
+      if (e.key === "Escape") {
+        elements.spectralLinesModal.style.display = "none";
       }
     }
   });

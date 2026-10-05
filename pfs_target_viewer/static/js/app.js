@@ -38,6 +38,16 @@ const SPECTRAL_LINES = [
 
 const C_KMS = 299792.458;
 
+function escapeHtml(str) {
+  if (str == null) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 // Default hidden columns (internal management / large paths)
 const DEFAULT_HIDDEN_COLUMNS = new Set([
   "fits_path",
@@ -571,7 +581,14 @@ window.openSpectralLinesModal = async function(event = null) {
       return;
     }
   }
-  renderSpectralLinesTable();
+  try {
+    renderSpectralLinesTable();
+  } catch (err) {
+    console.error("renderSpectralLinesTable error:", err);
+    if (elements.spectralLinesTbody) {
+      elements.spectralLinesTbody.innerHTML = `<tr><td colspan="6" class="text-center text-danger" style="padding: 2rem;">Error rendering lines: ${err.message}</td></tr>`;
+    }
+  }
   if (elements.spectralLineSearchInput) {
     elements.spectralLineSearchInput.focus();
   }
@@ -639,12 +656,13 @@ function renderSpectralLinesTable() {
     const minWave = l.minWave != null ? l.minWave.toFixed(1) : "-";
     const maxWave = l.maxWave != null ? l.maxWave.toFixed(1) : "-";
     const rangeStr = `${minWave} ~ ${maxWave}`;
+    const safeLineName = escapeHtml(l.lineName);
 
     return `
       <tr>
         <td>
-          <span class="line-name-cell" onclick="copySpectralLineName('${l.lineName}', this)" title="Click to copy line name">
-            <strong>${escapeHtml(l.lineName)}</strong>
+          <span class="line-name-cell" data-line="${safeLineName}" onclick="copySpectralLineName(this.dataset.line, this)" title="Click to copy line name">
+            <strong>${safeLineName}</strong>
             <span class="copy-hint">📋 copy</span>
           </span>
         </td>
@@ -653,7 +671,7 @@ function renderSpectralLinesTable() {
         <td style="text-align: right; font-family: var(--font-mono); font-size: 0.85rem; color: #facc15;">${avgWaveStr}</td>
         <td style="text-align: center; font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-muted);">${rangeStr}</td>
         <td style="text-align: right;">
-          <button type="button" class="btn-insert-line" onclick="insertSpectralLineToQuery('${l.lineName}')" title="Insert into SQL query editor">
+          <button type="button" class="btn-insert-line" data-line="${safeLineName}" onclick="insertSpectralLineToQuery(this.dataset.line)" title="Insert into SQL query editor">
             ＋ Insert SQL
           </button>
         </td>

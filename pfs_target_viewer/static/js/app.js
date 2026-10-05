@@ -3268,9 +3268,39 @@ window.openInteractiveSpectrum = async function (target) {
   elements.plotlyLoading.style.display = "flex";
 
   try {
-    const res = await fetch(`/api/targets/${catId}/${objId}/spectrum`);
+    const res = await fetch(`/api/targets/${catId}/${objId}/spectrum?format=binary`);
     if (!res.ok) throw new Error("FITS spectrum file could not be loaded.");
-    const data = await res.json();
+
+    let data;
+    const contentType = res.headers.get("content-type") || "";
+    if (contentType.includes("application/octet-stream")) {
+      const buffer = await res.arrayBuffer();
+      const view = new DataView(buffer);
+      const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+      if (magic !== "PFSS") {
+        throw new Error("Invalid spectrum binary header magic: " + magic);
+      }
+      const headerLen = view.getUint32(4, true);
+      const headerBytes = new Uint8Array(buffer, 8, headerLen);
+      const meta = JSON.parse(new TextDecoder("utf-8").decode(headerBytes));
+      const arrayStart = 8 + headerLen + ((4 - ((8 + headerLen) % 4)) % 4);
+      const n = meta.points_count;
+
+      data = {
+        catId: meta.catId,
+        objId: meta.objId,
+        points_count: n,
+        observations: meta.observations || [],
+        wavelength: meta.arrays.wavelength ? new Float32Array(buffer, arrayStart + meta.arrays.wavelength.offset, n) : new Float32Array(0),
+        flux: meta.arrays.flux ? new Float32Array(buffer, arrayStart + meta.arrays.flux.offset, n) : new Float32Array(0),
+        variance: meta.arrays.variance ? new Float32Array(buffer, arrayStart + meta.arrays.variance.offset, n) : null,
+        noise: meta.arrays.noise ? new Float32Array(buffer, arrayStart + meta.arrays.noise.offset, n) : null,
+        mask: meta.arrays.mask ? new Int32Array(buffer, arrayStart + meta.arrays.mask.offset, n) : null,
+      };
+    } else {
+      data = await res.json();
+    }
+
     state.rawSpectrumData = data;
 
     // Render observation table

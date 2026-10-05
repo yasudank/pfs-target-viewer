@@ -1085,10 +1085,15 @@ def get_target_details(catId: int, objId: str):
 
 
 @app.get("/api/targets/{catId}/{objId}/spectrum")
-def get_spectrum_data(catId: int, objId: str):
+def get_spectrum_data(
+    catId: int,
+    objId: str,
+    format: Optional[str] = Query(None, description="Output format: 'binary' (default) or 'json'"),
+    request: Request = None,
+):
     """
     Parse FITS raw data (WAVELENGTH, FLUX, COVAR, MASK, OBSERVATIONS)
-    and return JSON array for interactive Plotly rendering.
+    and return binary Float32Array stream or JSON for interactive Plotly rendering.
     """
     obj_id_int = int(objId)
     conn = get_db()
@@ -1139,6 +1144,72 @@ def get_spectrum_data(catId: int, objId: str):
                         "obsTime": str(r["obsTime"]) if "obsTime" in r.array.names else "",
                     })
 
+            points_count = len(wave) if wave is not None else 0
+
+            accept = request.headers.get("accept", "") if request else ""
+            use_binary = (format == "binary") or (format != "json" and ("application/octet-stream" in accept or "application/json" not in accept))
+
+            if use_binary:
+                wave_bytes = np.ascontiguousarray(wave, dtype="<f4").tobytes() if wave is not None else b""
+                flux_bytes = np.ascontiguousarray(flux, dtype="<f4").tobytes() if flux is not None else b""
+
+                byte_offset = 0
+                arrays_meta = {
+                    "wavelength": {"offset": byte_offset, "dtype": "float32"},
+                }
+                byte_offset += len(wave_bytes)
+
+                arrays_meta["flux"] = {"offset": byte_offset, "dtype": "float32"}
+                byte_offset += len(flux_bytes)
+
+                binary_chunks = [wave_bytes, flux_bytes]
+
+                if variance is not None:
+                    var_bytes = np.ascontiguousarray(variance, dtype="<f4").tobytes()
+                    arrays_meta["variance"] = {"offset": byte_offset, "dtype": "float32"}
+                    byte_offset += len(var_bytes)
+                    binary_chunks.append(var_bytes)
+
+                    with np.errstate(invalid="ignore"):
+                        noise_arr = np.sqrt(np.where(variance > 0, variance, np.nan))
+                    noise_bytes = np.ascontiguousarray(noise_arr, dtype="<f4").tobytes()
+                    arrays_meta["noise"] = {"offset": byte_offset, "dtype": "float32"}
+                    byte_offset += len(noise_bytes)
+                    binary_chunks.append(noise_bytes)
+                else:
+                    arrays_meta["variance"] = None
+                    arrays_meta["noise"] = None
+
+                if mask is not None:
+                    mask_bytes = np.ascontiguousarray(mask, dtype="<i4").tobytes()
+                    arrays_meta["mask"] = {"offset": byte_offset, "dtype": "int32"}
+                    byte_offset += len(mask_bytes)
+                    binary_chunks.append(mask_bytes)
+                else:
+                    arrays_meta["mask"] = None
+
+                header_data = {
+                    "catId": catId,
+                    "objId": str(objId),
+                    "points_count": points_count,
+                    "observations": observations,
+                    "arrays": arrays_meta,
+                }
+                header_json_bytes = json.dumps(header_data).encode("utf-8")
+                header_len = len(header_json_bytes)
+                pad_len = (4 - ((8 + header_len) % 4)) % 4
+                pad_bytes = b"\x00" * pad_len
+
+                payload = b"".join([
+                    b"PFSS",
+                    header_len.to_bytes(4, byteorder="little"),
+                    header_json_bytes,
+                    pad_bytes,
+                    *binary_chunks
+                ])
+
+                return Response(content=payload, media_type="application/octet-stream")
+
             # Clean float arrays for JSON compliance
             def sanitize_list(arr):
                 if arr is None:
@@ -1173,7 +1244,7 @@ def get_spectrum_data(catId: int, objId: str):
                 "noise": noise_list,
                 "mask": mask_list,
                 "observations": observations,
-                "points_count": len(wave_list) if wave_list else 0,
+                "points_count": points_count,
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read FITS file: {str(e)}")

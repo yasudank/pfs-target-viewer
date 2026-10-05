@@ -2096,12 +2096,39 @@ def get_database_schema():
         conn.close()
 
 
+KNOWN_SPECTRAL_REST_WAVELENGTHS = {
+    'AlII1670': 167.08, 'AlIII1854': 185.47, 'AlIII1862': 186.28, 'ArIII7136': 713.87, 'ArIII7751': 775.32,
+    'CI': 156.07, 'CII': 133.45, 'CIII1176a': 117.57, 'CIII1176b': 117.64, 'CIV1548': 154.82,
+    'CIV1548A': 154.82, 'CIV1550': 155.08, 'CIV1550A': 155.08, 'CaII_H': 396.95, 'CaII_K': 393.47,
+    'CaII_t1A': 850.04, 'CaII_t2A': 854.44, 'CaII_t3A': 866.45, 'FeI': 358.22, 'FeI6494': 649.68,
+    'FeII1608': 160.84, 'FeII2249': 225.05, 'FeII2260': 226.14, 'FeII2324': 232.46, 'FeII2344': 234.48,
+    'FeII2374': 237.51, 'FeII2382': 238.34, 'FeII2586': 258.73, 'FeII2600': 260.09, 'FeII2964': 296.82,
+    'FeII3785': 378.55, 'FeII4564': 457.08, 'FeII5305': 530.60, 'FeIII': 207.66, 'FeVII': 375.85,
+    'GBand': 430.46, 'H10': 379.89, 'H10A': 379.89, 'H11': 377.16, 'H11A': 377.16,
+    'H8': 389.01, 'H8A': 389.01, 'H9': 383.64, 'H9A': 383.64, 'Halpha': 656.46,
+    'HalphaA': 656.46, 'Hbeta': 486.27, 'HbetaA': 486.27, 'Hdelta': 410.28, 'HdeltaA': 410.28,
+    'HeI3190': 319.18, 'HeI5876': 587.74, 'HeII_d': 164.04, 'HeIIa': 164.05, 'HeIIb': 164.03,
+    'Hepsilon': 397.12, 'Hgamma': 434.16, 'HgammaA': 434.16, 'LyAA': 121.57, 'LyAE': 121.57,
+    'LyBA': 102.57, 'LyBE': 102.57, 'LyGA': 97.25, 'LyGE': 97.25, 'MgI2852': 285.37,
+    'MgII2796': 279.71, 'MgII2796E': 279.71, 'MgII2803': 280.43, 'MgII2803E': 280.43, 'MgI_t1A': 516.88,
+    'MgI_t2A': 517.41, 'MgI_t3A': 518.51, 'NII1084a': 108.40, 'NII1084b': 108.46, 'NV_d': 124.08,
+    'Na_D1': 589.16, 'Na_D2': 589.76, 'NeIII': 386.90, 'NiII': 137.05, 'OI': 844.88,
+    'OI-SiII': 130.54, 'OI1302': 130.22, 'OII7319': 732.10, 'OII7330': 733.22, 'OIII1661': 166.13,
+    'OIII1666': 166.66, 'OIII_d': 166.39, 'OVI1031A': 103.19, 'OVI1031E': 103.19, 'OVI1037A': 103.76,
+    'OVI1037E': 103.76, 'P10': 901.74, 'P10A': 901.74, 'P11': 886.52, 'P11A': 886.52,
+    'P9': 923.16, 'P9A': 923.16, 'SIII9068': 907.11, 'SiII1190': 119.04, 'SiII1193': 119.33,
+    'SiII1260': 126.04, 'SiII1526': 152.67, 'SiIII1206': 120.65, 'SiIV1393': 139.37, 'SiIV1398_d': 139.82,
+    'SiIV1402': 140.28, '[CIII]1907': 190.67, '[CIII]1909': 190.87, '[NII]a': 658.53, '[NII]b': 654.99,
+    '[NeVa]': 342.67, '[NeVb]': 334.68, '[OIII]a': 500.82, '[OIII]b': 496.03, '[OII]3726': 372.71,
+    '[OII]3729': 372.99, '[OI]6301': 630.21, '[SII]6716': 671.83, '[SII]6731': 673.27
+}
+
 _SPECTRAL_LINES_CACHE: Optional[dict] = None
 
 
 @app.get("/api/sql/lines")
 def get_spectral_lines():
-    """Retrieve metadata catalog of measured spectral lines in line_measurements."""
+    """Retrieve metadata catalog of measured spectral lines in line_measurements with rest-frame wavelengths."""
     global _SPECTRAL_LINES_CACHE
     if _SPECTRAL_LINES_CACHE is not None:
         return _SPECTRAL_LINES_CACHE
@@ -2114,13 +2141,14 @@ def get_spectral_lines():
         os.path.join(os.path.dirname(__file__), "..", "spectral_lines_cache.json"),
     ]
 
-    db_mtime = os.path.getmtime(active_db) if (active_db and os.path.exists(active_db)) else 0
     for p in candidate_cache_paths:
-        if p and os.path.exists(p) and os.path.getmtime(p) >= db_mtime:
+        if p and os.path.exists(p):
             try:
                 with open(p, "r", encoding="utf-8") as f:
-                    _SPECTRAL_LINES_CACHE = json.load(f)
-                return _SPECTRAL_LINES_CACHE
+                    data = json.load(f)
+                    if data.get("lines") and "restWave_nm" in data["lines"][0]:
+                        _SPECTRAL_LINES_CACHE = data
+                        return _SPECTRAL_LINES_CACHE
             except Exception:
                 pass
 
@@ -2128,23 +2156,24 @@ def get_spectral_lines():
     cur = conn.cursor()
     try:
         cur.execute("""
-            SELECT lineName, objectType, count(*) as count, round(avg(lineWave), 2) as avgWave,
-                   round(min(lineWave), 2) as minWave, round(max(lineWave), 2) as maxWave
+            SELECT lineName, count(*) as count
             FROM line_measurements
             WHERE lineName IS NOT NULL AND lineName != ''
-            GROUP BY lineName, objectType
+            GROUP BY lineName
             ORDER BY count DESC
         """)
         rows = cur.fetchall()
         lines = []
         for r in rows:
+            name = r["lineName"]
+            cnt = r["count"]
+            rest_nm = KNOWN_SPECTRAL_REST_WAVELENGTHS.get(name)
+            rest_A = round(rest_nm * 10.0, 1) if rest_nm is not None else None
             lines.append({
-                "lineName": r["lineName"],
-                "objectType": r["objectType"],
-                "count": r["count"],
-                "avgWave": r["avgWave"],
-                "minWave": r["minWave"],
-                "maxWave": r["maxWave"],
+                "lineName": name,
+                "count": cnt,
+                "restWave_nm": rest_nm,
+                "restWave_A": rest_A,
             })
         _SPECTRAL_LINES_CACHE = {
             "total_lines": len(lines),

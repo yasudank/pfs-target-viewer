@@ -121,7 +121,6 @@ const state = {
   // Spectral Line Catalog State
   spectralLinesData: null,
   spectralLinesSearchQuery: "",
-  spectralLinesTypeFilter: "ALL",
   spectralLinesSortCol: "count",
   spectralLinesSortAsc: false,
 };
@@ -275,11 +274,7 @@ const elements = {
   spectralLinesModalClose: document.getElementById("spectralLinesModalClose"),
   spectralLineSearchInput: document.getElementById("spectralLineSearchInput"),
   spectralLinesTbody: document.getElementById("spectralLinesTbody"),
-  lineTypeFilterGroup: document.getElementById("lineTypeFilterGroup"),
   spectralLinesVisibleCountBadge: document.getElementById("spectralLinesVisibleCountBadge"),
-  lineCountAll: document.getElementById("lineCountAll"),
-  lineCountGalaxy: document.getElementById("lineCountGalaxy"),
-  lineCountQso: document.getElementById("lineCountQso"),
 
   // Sky Map
   skyMapCard: document.getElementById("skyMapCard"),
@@ -559,24 +554,16 @@ window.openSpectralLinesModal = async function(event = null) {
   if (!state.spectralLinesData) {
     try {
       if (elements.spectralLinesTbody) {
-        elements.spectralLinesTbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted" style="padding: 2rem;">Loading spectral lines catalog...</td></tr>`;
+        elements.spectralLinesTbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted" style="padding: 2rem;">Loading spectral lines catalog...</td></tr>`;
       }
       const res = await fetch("/api/sql/lines");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       state.spectralLinesData = data;
-
-      // Update counters in pills
-      const lines = data.lines || [];
-      const galCount = lines.filter((l) => l.objectType === "GALAXY").length;
-      const qsoCount = lines.filter((l) => l.objectType === "QSO").length;
-      if (elements.lineCountAll) elements.lineCountAll.textContent = lines.length;
-      if (elements.lineCountGalaxy) elements.lineCountGalaxy.textContent = galCount;
-      if (elements.lineCountQso) elements.lineCountQso.textContent = qsoCount;
     } catch (e) {
       console.error("Failed loading spectral lines:", e);
       if (elements.spectralLinesTbody) {
-        elements.spectralLinesTbody.innerHTML = `<tr><td colspan="6" class="text-center text-danger" style="padding: 2rem;">Error loading lines: ${e.message}</td></tr>`;
+        elements.spectralLinesTbody.innerHTML = `<tr><td colspan="4" class="text-center text-danger" style="padding: 2rem;">Error loading lines: ${e.message}</td></tr>`;
       }
       return;
     }
@@ -586,7 +573,7 @@ window.openSpectralLinesModal = async function(event = null) {
   } catch (err) {
     console.error("renderSpectralLinesTable error:", err);
     if (elements.spectralLinesTbody) {
-      elements.spectralLinesTbody.innerHTML = `<tr><td colspan="6" class="text-center text-danger" style="padding: 2rem;">Error rendering lines: ${err.message}</td></tr>`;
+      elements.spectralLinesTbody.innerHTML = `<tr><td colspan="4" class="text-center text-danger" style="padding: 2rem;">Error rendering lines: ${err.message}</td></tr>`;
     }
   }
   if (elements.spectralLineSearchInput) {
@@ -604,15 +591,15 @@ function renderSpectralLinesTable() {
   if (!state.spectralLinesData || !elements.spectralLinesTbody) return;
   const allLines = state.spectralLinesData.lines || [];
   const q = (state.spectralLinesSearchQuery || "").trim().toLowerCase();
-  const typeFilter = state.spectralLinesTypeFilter || "ALL";
 
   let filtered = allLines.filter((l) => {
-    if (typeFilter !== "ALL" && l.objectType !== typeFilter) return false;
     if (q) {
       const matchName = (l.lineName || "").toLowerCase().includes(q);
-      const matchType = (l.objectType || "").toLowerCase().includes(q);
-      const matchWave = l.avgWave != null && String(l.avgWave).includes(q);
-      if (!matchName && !matchType && !matchWave) return false;
+      const matchWave = l.restWave_nm != null && (
+        String(l.restWave_nm).includes(q) ||
+        (l.restWave_A != null && String(l.restWave_A).includes(q))
+      );
+      if (!matchName && !matchWave) return false;
     }
     return true;
   });
@@ -633,7 +620,7 @@ function renderSpectralLinesTable() {
   });
 
   // Update sort indicators on headers
-  ["lineName", "objectType", "count", "avgWave"].forEach((col) => {
+  ["lineName", "restWave_nm", "count"].forEach((col) => {
     const iconEl = document.getElementById(`sort_icon_${col}`);
     if (iconEl) {
       iconEl.textContent = sortCol === col ? (sortAsc ? "▲" : "▼") : "";
@@ -645,17 +632,17 @@ function renderSpectralLinesTable() {
   }
 
   if (filtered.length === 0) {
-    elements.spectralLinesTbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted" style="padding: 2rem;">No matching lines found for query "${escapeHtml(q)}".</td></tr>`;
+    elements.spectralLinesTbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted" style="padding: 2rem;">No matching lines found for query "${escapeHtml(q)}".</td></tr>`;
     return;
   }
 
   const rowsHtml = filtered.map((l) => {
-    const typeBadgeClass = l.objectType === "GALAXY" ? "badge-galaxy" : (l.objectType === "QSO" ? "badge-qso" : "badge-star");
     const countStr = l.count != null ? l.count.toLocaleString() : "-";
-    const avgWaveStr = l.avgWave != null ? l.avgWave.toFixed(2) : "-";
-    const minWave = l.minWave != null ? l.minWave.toFixed(1) : "-";
-    const maxWave = l.maxWave != null ? l.maxWave.toFixed(1) : "-";
-    const rangeStr = `${minWave} ~ ${maxWave}`;
+    const restWaveNmStr = l.restWave_nm != null ? l.restWave_nm.toFixed(2) : "-";
+    const restWaveAStr = l.restWave_A != null ? l.restWave_A.toFixed(1) : "-";
+    const waveDisplay = l.restWave_nm != null
+      ? `<span style="font-weight: 600; color: #facc15;">${restWaveNmStr} nm</span> <span style="font-size: 0.78rem; color: #94a3b8;">(${restWaveAStr} Å)</span>`
+      : `<span style="color: var(--text-muted);">-</span>`;
     const safeLineName = escapeHtml(l.lineName);
 
     return `
@@ -666,10 +653,8 @@ function renderSpectralLinesTable() {
             <span class="copy-hint">📋 copy</span>
           </span>
         </td>
-        <td><span class="badge ${typeBadgeClass}">${l.objectType}</span></td>
-        <td style="text-align: right; font-family: var(--font-mono); font-size: 0.85rem; color: #bae6fd;">${countStr}</td>
-        <td style="text-align: right; font-family: var(--font-mono); font-size: 0.85rem; color: #facc15;">${avgWaveStr}</td>
-        <td style="text-align: center; font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-muted);">${rangeStr}</td>
+        <td style="text-align: right; font-family: var(--font-mono); font-size: 0.85rem;">${waveDisplay}</td>
+        <td style="text-align: right; font-family: var(--font-mono); font-size: 0.85rem; color: #bae6fd; font-weight: 500;">${countStr}</td>
         <td style="text-align: right;">
           <button type="button" class="btn-insert-line" data-line="${safeLineName}" onclick="insertSpectralLineToQuery(this.dataset.line)" title="Insert into SQL query editor">
             ＋ Insert SQL
@@ -687,7 +672,7 @@ window.sortSpectralLines = function(col) {
     state.spectralLinesSortAsc = !state.spectralLinesSortAsc;
   } else {
     state.spectralLinesSortCol = col;
-    state.spectralLinesSortAsc = (col === "lineName" || col === "objectType");
+    state.spectralLinesSortAsc = (col === "lineName");
   }
   renderSpectralLinesTable();
 };
@@ -1605,18 +1590,7 @@ function initEventListeners() {
     });
   }
 
-  if (elements.lineTypeFilterGroup) {
-    elements.lineTypeFilterGroup.querySelectorAll("button").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        elements.lineTypeFilterGroup.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
-        state.spectralLinesTypeFilter = btn.dataset.type || "ALL";
-        renderSpectralLinesTable();
-      });
-    });
-  }
-
-  ["lineName", "objectType", "count", "avgWave"].forEach((col) => {
+  ["lineName", "restWave_nm", "count"].forEach((col) => {
     const th = document.getElementById(`th_sort_${col}`);
     if (th) {
       th.addEventListener("click", () => sortSpectralLines(col));

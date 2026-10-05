@@ -785,13 +785,6 @@ ORDER BY bestRedshift DESC</textarea>
             <span style="position: absolute; left: 0.65rem; top: 50%; transform: translateY(-50%); opacity: 0.5; pointer-events: none;">🔍</span>
           </div>
 
-          <!-- Object Type Filter Pills -->
-          <div class="btn-group" role="group" id="lineTypeFilterGroup">
-            <button type="button" class="btn btn-sm btn-secondary active" data-type="ALL">All (<span id="lineCountAll">0</span>)</button>
-            <button type="button" class="btn btn-sm btn-secondary" data-type="GALAXY">Galaxy (<span id="lineCountGalaxy">0</span>)</button>
-            <button type="button" class="btn btn-sm btn-secondary" data-type="QSO">QSO (<span id="lineCountQso">0</span>)</button>
-          </div>
-
           <div style="font-size: 0.82rem; color: var(--text-muted); margin-left: auto;">
             <span id="spectralLinesVisibleCountBadge">0</span> lines shown
           </div>
@@ -799,7 +792,7 @@ ORDER BY bestRedshift DESC</textarea>
 
         <div style="font-size: 0.8rem; color: #94a3b8; background: rgba(30, 41, 59, 0.6); padding: 0.5rem 0.8rem; border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,0.06); display: flex; justify-content: space-between; align-items: center;">
           <span>💡 <strong>Tip:</strong> Click <strong>"＋ Insert SQL"</strong> to paste into your query, or click any line name to copy it.</span>
-          <span style="font-size: 0.75rem; color: #64748b;">Obs. Wave = Observed central wavelength [nm]</span>
+          <span style="font-size: 0.75rem; color: #94a3b8;">Rest Wave = Rest-frame central wavelength &lambda;<sub>rest</sub></span>
         </div>
 
         <!-- Scrollable Table of Lines -->
@@ -808,16 +801,14 @@ ORDER BY bestRedshift DESC</textarea>
             <thead style="position: sticky; top: 0; background: var(--bg-surface); z-index: 2;">
               <tr>
                 <th style="cursor: pointer; user-select: none;" id="th_sort_lineName">Line Name <span id="sort_icon_lineName"></span></th>
-                <th style="cursor: pointer; user-select: none;" id="th_sort_objectType">Type <span id="sort_icon_objectType"></span></th>
+                <th style="cursor: pointer; user-select: none; text-align: right;" id="th_sort_restWave_nm">Rest Wave [nm] (Å) <span id="sort_icon_restWave_nm"></span></th>
                 <th style="cursor: pointer; user-select: none; text-align: right;" id="th_sort_count">DB Count <span id="sort_icon_count">▼</span></th>
-                <th style="cursor: pointer; user-select: none; text-align: right;" id="th_sort_avgWave">Obs. Wave [nm] <span id="sort_icon_avgWave"></span></th>
-                <th style="cursor: pointer; user-select: none; text-align: center;" id="th_sort_waveRange">Obs. Range [nm]</th>
                 <th style="text-align: right; width: 140px;">Action</th>
               </tr>
             </thead>
             <tbody id="spectralLinesTbody">
               <tr>
-                <td colspan="6" class="text-center text-muted" style="padding: 2rem;">Loading spectral lines...</td>
+                <td colspan="4" class="text-center text-muted" style="padding: 2rem;">Loading spectral lines...</td>
               </tr>
             </tbody>
           </table>
@@ -827,6 +818,6 @@ ORDER BY bestRedshift DESC</textarea>
   </div>
 
   <!-- Client-side script -->
-  <script src="/static/js/app.js?v=3.4"></script>
+  <script src="/static/js/app.js?v=3.5"></script>
 </body>
 </html>

@@ -1,0 +1,719 @@
+{
+  "total_lines": 119,
+  "lines": [
+    {
+      "lineName": "[NeVa]",
+      "count": 299264,
+      "restWave_nm": 342.67,
+      "restWave_A": 3426.7
+    },
+    {
+      "lineName": "[NeVb]",
+      "count": 291359,
+      "restWave_nm": 334.68,
+      "restWave_A": 3346.8
+    },
+    {
+      "lineName": "[OII]3726",
+      "count": 285192,
+      "restWave_nm": 372.71,
+      "restWave_A": 3727.1
+    },
+    {
+      "lineName": "[OII]3729",
+      "count": 284938,
+      "restWave_nm": 372.99,
+      "restWave_A": 3729.9
+    },
+    {
+      "lineName": "Hepsilon",
+      "count": 269331,
+      "restWave_nm": 397.12,
+      "restWave_A": 3971.2
+    },
+    {
+      "lineName": "Hdelta",
+      "count": 247123,
+      "restWave_nm": 410.28,
+      "restWave_A": 4102.8
+    },
+    {
+      "lineName": "MgII2796E",
+      "count": 244869,
+      "restWave_nm": 279.71,
+      "restWave_A": 2797.1
+    },
+    {
+      "lineName": "MgII2803E",
+      "count": 244326,
+      "restWave_nm": 280.43,
+      "restWave_A": 2804.3
+    },
+    {
+      "lineName": "[CIII]1909",
+      "count": 240757,
+      "restWave_nm": 190.87,
+      "restWave_A": 1908.7
+    },
+    {
+      "lineName": "[CIII]1907",
+      "count": 240174,
+      "restWave_nm": 190.67,
+      "restWave_A": 1906.7
+    },
+    {
+      "lineName": "H10",
+      "count": 223029,
+      "restWave_nm": 379.89,
+      "restWave_A": 3798.9
+    },
+    {
+      "lineName": "FeVII",
+      "count": 222226,
+      "restWave_nm": 375.85,
+      "restWave_A": 3758.5
+    },
+    {
+      "lineName": "FeII3785",
+      "count": 222138,
+      "restWave_nm": 378.55,
+      "restWave_A": 3785.5
+    },
+    {
+      "lineName": "H11",
+      "count": 221764,
+      "restWave_nm": 377.16,
+      "restWave_A": 3771.6
+    },
+    {
+      "lineName": "NeIII",
+      "count": 216646,
+      "restWave_nm": 386.9,
+      "restWave_A": 3869.0
+    },
+    {
+      "lineName": "H9",
+      "count": 216640,
+      "restWave_nm": 383.64,
+      "restWave_A": 3836.4
+    },
+    {
+      "lineName": "H8",
+      "count": 210189,
+      "restWave_nm": 389.01,
+      "restWave_A": 3890.1
+    },
+    {
+      "lineName": "HeI3190",
+      "count": 207269,
+      "restWave_nm": 319.18,
+      "restWave_A": 3191.8
+    },
+    {
+      "lineName": "Hgamma",
+      "count": 174665,
+      "restWave_nm": 434.16,
+      "restWave_A": 4341.6
+    },
+    {
+      "lineName": "Hbeta",
+      "count": 136655,
+      "restWave_nm": 486.27,
+      "restWave_A": 4862.7
+    },
+    {
+      "lineName": "[OIII]a",
+      "count": 134455,
+      "restWave_nm": 500.82,
+      "restWave_A": 5008.2
+    },
+    {
+      "lineName": "[OIII]b",
+      "count": 132989,
+      "restWave_nm": 496.03,
+      "restWave_A": 4960.3
+    },
+    {
+      "lineName": "FeIII",
+      "count": 120911,
+      "restWave_nm": 207.66,
+      "restWave_A": 2076.6
+    },
+    {
+      "lineName": "AlIII1862",
+      "count": 117681,
+      "restWave_nm": 186.28,
+      "restWave_A": 1862.8
+    },
+    {
+      "lineName": "AlIII1854",
+      "count": 116767,
+      "restWave_nm": 185.47,
+      "restWave_A": 1854.7
+    },
+    {
+      "lineName": "FeII2324",
+      "count": 107481,
+      "restWave_nm": 232.46,
+      "restWave_A": 2324.6
+    },
+    {
+      "lineName": "HeI5876",
+      "count": 99388,
+      "restWave_nm": 587.74,
+      "restWave_A": 5877.4
+    },
+    {
+      "lineName": "CIV1548",
+      "count": 97056,
+      "restWave_nm": 154.82,
+      "restWave_A": 1548.2
+    },
+    {
+      "lineName": "CIV1550",
+      "count": 96128,
+      "restWave_nm": 155.08,
+      "restWave_A": 1550.8
+    },
+    {
+      "lineName": "FeII2964",
+      "count": 93106,
+      "restWave_nm": 296.82,
+      "restWave_A": 2968.2
+    },
+    {
+      "lineName": "[OI]6301",
+      "count": 84454,
+      "restWave_nm": 630.21,
+      "restWave_A": 6302.1
+    },
+    {
+      "lineName": "FeI6494",
+      "count": 79718,
+      "restWave_nm": 649.68,
+      "restWave_A": 6496.8
+    },
+    {
+      "lineName": "LyAE",
+      "count": 79509,
+      "restWave_nm": 121.57,
+      "restWave_A": 1215.7
+    },
+    {
+      "lineName": "[NII]b",
+      "count": 78641,
+      "restWave_nm": 654.99,
+      "restWave_A": 6549.9
+    },
+    {
+      "lineName": "Halpha",
+      "count": 78179,
+      "restWave_nm": 656.46,
+      "restWave_A": 6564.6
+    },
+    {
+      "lineName": "[NII]a",
+      "count": 76927,
+      "restWave_nm": 658.53,
+      "restWave_A": 6585.3
+    },
+    {
+      "lineName": "[SII]6716",
+      "count": 70186,
+      "restWave_nm": 671.83,
+      "restWave_A": 6718.3
+    },
+    {
+      "lineName": "[SII]6731",
+      "count": 69708,
+      "restWave_nm": 673.27,
+      "restWave_A": 6732.7
+    },
+    {
+      "lineName": "LyBE",
+      "count": 65951,
+      "restWave_nm": 102.57,
+      "restWave_A": 1025.7
+    },
+    {
+      "lineName": "OVI1037E",
+      "count": 63379,
+      "restWave_nm": 103.76,
+      "restWave_A": 1037.6
+    },
+    {
+      "lineName": "OIII1661",
+      "count": 62165,
+      "restWave_nm": 166.13,
+      "restWave_A": 1661.3
+    },
+    {
+      "lineName": "OIII1666",
+      "count": 61868,
+      "restWave_nm": 166.66,
+      "restWave_A": 1666.6
+    },
+    {
+      "lineName": "OVI1031E",
+      "count": 60361,
+      "restWave_nm": 103.19,
+      "restWave_A": 1031.9
+    },
+    {
+      "lineName": "HeIIa",
+      "count": 59831,
+      "restWave_nm": 164.05,
+      "restWave_A": 1640.5
+    },
+    {
+      "lineName": "HeIIb",
+      "count": 59793,
+      "restWave_nm": 164.03,
+      "restWave_A": 1640.3
+    },
+    {
+      "lineName": "LyGE",
+      "count": 59592,
+      "restWave_nm": 97.25,
+      "restWave_A": 972.5
+    },
+    {
+      "lineName": "ArIII7136",
+      "count": 56398,
+      "restWave_nm": 713.87,
+      "restWave_A": 7138.7
+    },
+    {
+      "lineName": "OIII_d",
+      "count": 51757,
+      "restWave_nm": 166.39,
+      "restWave_A": 1663.9
+    },
+    {
+      "lineName": "OII7319",
+      "count": 47495,
+      "restWave_nm": 732.1,
+      "restWave_A": 7321.0
+    },
+    {
+      "lineName": "OII7330",
+      "count": 46490,
+      "restWave_nm": 733.22,
+      "restWave_A": 7332.2
+    },
+    {
+      "lineName": "HeII_d",
+      "count": 40969,
+      "restWave_nm": 164.04,
+      "restWave_A": 1640.4
+    },
+    {
+      "lineName": "SiII1260",
+      "count": 40168,
+      "restWave_nm": 126.04,
+      "restWave_A": 1260.4
+    },
+    {
+      "lineName": "SiIV1398_d",
+      "count": 37508,
+      "restWave_nm": 139.82,
+      "restWave_A": 1398.2
+    },
+    {
+      "lineName": "CII",
+      "count": 35983,
+      "restWave_nm": 133.45,
+      "restWave_A": 1334.5
+    },
+    {
+      "lineName": "SiIII1206",
+      "count": 35173,
+      "restWave_nm": 120.65,
+      "restWave_A": 1206.5
+    },
+    {
+      "lineName": "SiII1193",
+      "count": 35141,
+      "restWave_nm": 119.33,
+      "restWave_A": 1193.3
+    },
+    {
+      "lineName": "SiII1190",
+      "count": 35129,
+      "restWave_nm": 119.04,
+      "restWave_A": 1190.4
+    },
+    {
+      "lineName": "CIII1176b",
+      "count": 34967,
+      "restWave_nm": 117.64,
+      "restWave_A": 1176.4
+    },
+    {
+      "lineName": "CIII1176a",
+      "count": 34959,
+      "restWave_nm": 117.57,
+      "restWave_A": 1175.7
+    },
+    {
+      "lineName": "OI-SiII",
+      "count": 34810,
+      "restWave_nm": 130.54,
+      "restWave_A": 1305.4
+    },
+    {
+      "lineName": "NV_d",
+      "count": 34556,
+      "restWave_nm": 124.08,
+      "restWave_A": 1240.8
+    },
+    {
+      "lineName": "ArIII7751",
+      "count": 33103,
+      "restWave_nm": 775.32,
+      "restWave_A": 7753.2
+    },
+    {
+      "lineName": "FeII4564",
+      "count": 19251,
+      "restWave_nm": 457.08,
+      "restWave_A": 4570.8
+    },
+    {
+      "lineName": "OI",
+      "count": 15241,
+      "restWave_nm": 844.88,
+      "restWave_A": 8448.8
+    },
+    {
+      "lineName": "CaII_H",
+      "count": 10097,
+      "restWave_nm": 396.95,
+      "restWave_A": 3969.5
+    },
+    {
+      "lineName": "GBand",
+      "count": 9929,
+      "restWave_nm": 430.46,
+      "restWave_A": 4304.6
+    },
+    {
+      "lineName": "HgammaA",
+      "count": 9886,
+      "restWave_nm": 434.16,
+      "restWave_A": 4341.6
+    },
+    {
+      "lineName": "CaII_K",
+      "count": 9700,
+      "restWave_nm": 393.47,
+      "restWave_A": 3934.7
+    },
+    {
+      "lineName": "H8A",
+      "count": 9569,
+      "restWave_nm": 389.01,
+      "restWave_A": 3890.1
+    },
+    {
+      "lineName": "FeI",
+      "count": 9515,
+      "restWave_nm": 358.22,
+      "restWave_A": 3582.2
+    },
+    {
+      "lineName": "MgI_t3A",
+      "count": 9364,
+      "restWave_nm": 518.51,
+      "restWave_A": 5185.1
+    },
+    {
+      "lineName": "MgI_t1A",
+      "count": 9363,
+      "restWave_nm": 516.88,
+      "restWave_A": 5168.8
+    },
+    {
+      "lineName": "MgI_t2A",
+      "count": 9363,
+      "restWave_nm": 517.41,
+      "restWave_A": 5174.1
+    },
+    {
+      "lineName": "HbetaA",
+      "count": 9346,
+      "restWave_nm": 486.27,
+      "restWave_A": 4862.7
+    },
+    {
+      "lineName": "H9A",
+      "count": 9247,
+      "restWave_nm": 383.64,
+      "restWave_A": 3836.4
+    },
+    {
+      "lineName": "H10A",
+      "count": 9228,
+      "restWave_nm": 379.89,
+      "restWave_A": 3798.9
+    },
+    {
+      "lineName": "H11A",
+      "count": 9158,
+      "restWave_nm": 377.16,
+      "restWave_A": 3771.6
+    },
+    {
+      "lineName": "HdeltaA",
+      "count": 9020,
+      "restWave_nm": 410.28,
+      "restWave_A": 4102.8
+    },
+    {
+      "lineName": "P11",
+      "count": 8571,
+      "restWave_nm": 886.52,
+      "restWave_A": 8865.2
+    },
+    {
+      "lineName": "AlII1670",
+      "count": 7947,
+      "restWave_nm": 167.08,
+      "restWave_A": 1670.8
+    },
+    {
+      "lineName": "MgI2852",
+      "count": 7912,
+      "restWave_nm": 285.37,
+      "restWave_A": 2853.7
+    },
+    {
+      "lineName": "SiII1526",
+      "count": 7555,
+      "restWave_nm": 152.67,
+      "restWave_A": 1526.7
+    },
+    {
+      "lineName": "MgII2803",
+      "count": 7514,
+      "restWave_nm": 280.43,
+      "restWave_A": 2804.3
+    },
+    {
+      "lineName": "FeII1608",
+      "count": 7512,
+      "restWave_nm": 160.84,
+      "restWave_A": 1608.4
+    },
+    {
+      "lineName": "MgII2796",
+      "count": 7488,
+      "restWave_nm": 279.71,
+      "restWave_A": 2797.1
+    },
+    {
+      "lineName": "FeII5305",
+      "count": 7342,
+      "restWave_nm": 530.6,
+      "restWave_A": 5306.0
+    },
+    {
+      "lineName": "P10",
+      "count": 7329,
+      "restWave_nm": 901.74,
+      "restWave_A": 9017.4
+    },
+    {
+      "lineName": "CIV1548A",
+      "count": 7252,
+      "restWave_nm": 154.82,
+      "restWave_A": 1548.2
+    },
+    {
+      "lineName": "CIV1550A",
+      "count": 7252,
+      "restWave_nm": 155.08,
+      "restWave_A": 1550.8
+    },
+    {
+      "lineName": "CI",
+      "count": 7227,
+      "restWave_nm": 156.07,
+      "restWave_A": 1560.7
+    },
+    {
+      "lineName": "FeII2249",
+      "count": 6985,
+      "restWave_nm": 225.05,
+      "restWave_A": 2250.5
+    },
+    {
+      "lineName": "FeII2260",
+      "count": 6982,
+      "restWave_nm": 226.14,
+      "restWave_A": 2261.4
+    },
+    {
+      "lineName": "Na_D1",
+      "count": 6835,
+      "restWave_nm": 589.16,
+      "restWave_A": 5891.6
+    },
+    {
+      "lineName": "Na_D2",
+      "count": 6828,
+      "restWave_nm": 589.76,
+      "restWave_A": 5897.6
+    },
+    {
+      "lineName": "SIII9068",
+      "count": 6826,
+      "restWave_nm": 907.11,
+      "restWave_A": 9071.1
+    },
+    {
+      "lineName": "SiIV1402",
+      "count": 6398,
+      "restWave_nm": 140.28,
+      "restWave_A": 1402.8
+    },
+    {
+      "lineName": "SiIV1393",
+      "count": 6394,
+      "restWave_nm": 139.37,
+      "restWave_A": 1393.7
+    },
+    {
+      "lineName": "NiII",
+      "count": 6343,
+      "restWave_nm": 137.05,
+      "restWave_A": 1370.5
+    },
+    {
+      "lineName": "P9",
+      "count": 6315,
+      "restWave_nm": 923.16,
+      "restWave_A": 9231.6
+    },
+    {
+      "lineName": "OI1302",
+      "count": 6310,
+      "restWave_nm": 130.22,
+      "restWave_A": 1302.2
+    },
+    {
+      "lineName": "FeII2586",
+      "count": 6052,
+      "restWave_nm": 258.73,
+      "restWave_A": 2587.3
+    },
+    {
+      "lineName": "FeII2600",
+      "count": 6032,
+      "restWave_nm": 260.09,
+      "restWave_A": 2600.9
+    },
+    {
+      "lineName": "LyAA",
+      "count": 5851,
+      "restWave_nm": 121.57,
+      "restWave_A": 1215.7
+    },
+    {
+      "lineName": "NII1084a",
+      "count": 5520,
+      "restWave_nm": 108.4,
+      "restWave_A": 1084.0
+    },
+    {
+      "lineName": "NII1084b",
+      "count": 5518,
+      "restWave_nm": 108.46,
+      "restWave_A": 1084.6
+    },
+    {
+      "lineName": "FeII2344",
+      "count": 5480,
+      "restWave_nm": 234.48,
+      "restWave_A": 2344.8
+    },
+    {
+      "lineName": "FeII2374",
+      "count": 5315,
+      "restWave_nm": 237.51,
+      "restWave_A": 2375.1
+    },
+    {
+      "lineName": "FeII2382",
+      "count": 5236,
+      "restWave_nm": 238.34,
+      "restWave_A": 2383.4
+    },
+    {
+      "lineName": "HalphaA",
+      "count": 4800,
+      "restWave_nm": 656.46,
+      "restWave_A": 6564.6
+    },
+    {
+      "lineName": "OVI1037A",
+      "count": 4571,
+      "restWave_nm": 103.76,
+      "restWave_A": 1037.6
+    },
+    {
+      "lineName": "OVI1031A",
+      "count": 4226,
+      "restWave_nm": 103.19,
+      "restWave_A": 1031.9
+    },
+    {
+      "lineName": "LyBA",
+      "count": 4149,
+      "restWave_nm": 102.57,
+      "restWave_A": 1025.7
+    },
+    {
+      "lineName": "LyGA",
+      "count": 4078,
+      "restWave_nm": 97.25,
+      "restWave_A": 972.5
+    },
+    {
+      "lineName": "CaII_t1A",
+      "count": 993,
+      "restWave_nm": 850.04,
+      "restWave_A": 8500.4
+    },
+    {
+      "lineName": "CaII_t2A",
+      "count": 959,
+      "restWave_nm": 854.44,
+      "restWave_A": 8544.4
+    },
+    {
+      "lineName": "CaII_t3A",
+      "count": 854,
+      "restWave_nm": 866.45,
+      "restWave_A": 8664.5
+    },
+    {
+      "lineName": "P11A",
+      "count": 651,
+      "restWave_nm": 886.52,
+      "restWave_A": 8865.2
+    },
+    {
+      "lineName": "P10A",
+      "count": 590,
+      "restWave_nm": 901.74,
+      "restWave_A": 9017.4
+    },
+    {
+      "lineName": "P9A",
+      "count": 549,
+      "restWave_nm": 923.16,
+      "restWave_A": 9231.6
+    }
+  ]
+}

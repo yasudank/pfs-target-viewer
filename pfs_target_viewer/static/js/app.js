@@ -734,9 +734,9 @@ async function validateSql() {
     });
     const data = await res.json();
     if (!res.ok || !data.valid) {
-      setSqlFeedback("error", `✗ Syntax Error: ${data.error || "Invalid SQL syntax"}`);
+      setSqlFeedback("error", `Syntax Error: ${data.error || "Invalid SQL syntax"}`);
     } else {
-      setSqlFeedback("success", "✓ Query syntax is valid");
+      setSqlFeedback("success", "Query syntax is valid");
     }
   } catch (err) {
     setSqlFeedback("error", `Validation error: ${err.message}`);
@@ -804,7 +804,7 @@ async function runSqlQuery(page = 1, skipSky = false, forceRefresh = false) {
     }
 
     const cacheMsg = data.cached ? " (⚡ cached from server memory)" : "";
-    setSqlFeedback("success", `✓ Query completed in ${data.execution_time_ms} ms${cacheMsg} (${data.total.toLocaleString()} rows found)`);
+    setSqlFeedback("success", `Query completed in ${data.execution_time_ms} ms${cacheMsg} (${data.total.toLocaleString()} rows found)`);
 
     // Update Sky Map coordinates with returned sky_targets (clearing if 0 rows matched)
     if (data.sky_targets !== null && data.sky_targets !== undefined) {
@@ -818,7 +818,7 @@ async function runSqlQuery(page = 1, skipSky = false, forceRefresh = false) {
     updatePaginationUI();
   } catch (err) {
     console.error("SQL execution error:", err);
-    setSqlFeedback("error", `✗ Execution failed: ${err.message}`);
+    setSqlFeedback("error", `Execution failed: ${err.message}`);
     elements.targetsTbody.innerHTML = `<tr><td colspan="7" class="text-center text-muted" style="padding: 2rem;">
       <div style="color: #f87171; font-weight: 600; margin-bottom: 0.5rem; font-size: 1rem;">SQL Execution Failed</div>
       <div style="font-family: monospace; font-size: 0.85rem; color: #cbd5e1; white-space: pre-wrap; max-width: 600px; margin: 0 auto; background: rgba(0,0,0,0.3); padding: 0.75rem; border-radius: 4px; border: 1px solid rgba(248,113,113,0.3);">${err.message}</div>

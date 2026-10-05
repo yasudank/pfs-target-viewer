@@ -299,10 +299,10 @@ ORDER BY CONE_DIST_ARCSEC(ra, dec, 150.0, 2.0) ASC`,
 
   oii_emitters: `-- Measured spectral lines joined for targets in pointing cone (within 0.2 deg)
 SELECT 
-  ts.catId, ts.objId, ts.ra, ts.dec, ts.bestRedshift,
+  ts.catId, ts.objId, ts.combination, ts.ra, ts.dec, ts.bestRedshift,
   lm.lineName, lm.lineWave, lm.lineFlux, lm.lineEW
 FROM target_summary ts
-JOIN line_measurements lm ON ts.catId = lm.catId AND ts.objId = lm.objId
+JOIN line_measurements lm ON ts.catId = lm.catId AND ts.objId = lm.objId AND ts.combination = lm.combination
 WHERE CONE_SEARCH(ts.ra, ts.dec, 150.0, 2.0, 720.0)
 ORDER BY lm.lineFlux DESC`,
 

@@ -2003,6 +2003,26 @@ def wrap_query_with_target_summary(conn: sqlite3.Connection, sql: str) -> Tuple[
 
     extra_str = (", " + ", ".join(extra_selects)) if extra_selects else ""
 
+    has_comb = "combination" in out_cols
+    if has_comb:
+        join_clause = f"""
+        LEFT JOIN {tbl} _ts 
+          ON _ts.catId = _user_query.catId 
+         AND _ts.objId = _user_query.objId 
+         AND _ts.combination = _user_query.combination
+        """
+    else:
+        # Guarantee strictly 1-to-1 matching via rowid lookup to prevent Cartesian row multiplication
+        # when a target has multiple coadd combinations in target_summary
+        join_clause = f"""
+        LEFT JOIN {tbl} _ts 
+          ON _ts.rowid = (
+              SELECT rowid FROM {tbl} 
+              WHERE catId = _user_query.catId AND objId = _user_query.objId 
+              LIMIT 1
+          )
+        """
+
     wrapped_sql = f"""
         WITH _user_query AS (
             {sql}
@@ -2011,8 +2031,7 @@ def wrap_query_with_target_summary(conn: sqlite3.Connection, sql: str) -> Tuple[
             _user_query.*
             {extra_str}
         FROM _user_query
-        LEFT JOIN {tbl} _ts 
-          ON _ts.catId = _user_query.catId AND _ts.objId = _user_query.objId
+        {join_clause}
     """
     return wrapped_sql, out_cols, True
 

@@ -316,7 +316,7 @@ ORDER BY bestRedshift DESC`,
 
   boundary_class: `-- Ambiguous classification: Probabilities for Galaxy and Star are both around 0.5
 SELECT 
-  catId, objId, classificationName, probaGalaxy, probaStar, probaQSO, bestRedshift
+  catId, objId, combination, ra, dec, classificationName, probaGalaxy, probaStar, probaQSO, bestRedshift
 FROM target_summary
 WHERE probaGalaxy BETWEEN 0.35 AND 0.65 
   AND probaStar BETWEEN 0.35 AND 0.65
@@ -324,10 +324,10 @@ ORDER BY ABS(probaGalaxy - probaStar) ASC`,
 
   solver_warnings: `-- Targets flagged with Redshift Solver Warnings (zWarning or lWarning)
 SELECT 
-  ts.catId, ts.objId, ts.ra, ts.dec, ts.classificationName, ts.bestRedshift,
-  sr.zWarningValue, sr.zWarningName, sr.lWarningValue, sr.lWarningName
+  ts.catId, ts.objId, ts.combination, ts.ra, ts.dec, ts.classificationName, ts.bestRedshift,
+  sr.objectType, sr.zWarningValue, sr.zWarningName, sr.lWarningValue, sr.lWarningName
 FROM target_summary ts
-JOIN solver_results sr ON ts.catId = sr.catId AND ts.objId = sr.objId
+JOIN solver_results sr ON ts.catId = sr.catId AND ts.objId = sr.objId AND ts.combination = sr.combination
 WHERE sr.zWarningValue > 0 OR sr.lWarningValue > 0
 ORDER BY sr.zWarningValue DESC`,
 
@@ -1787,9 +1787,10 @@ function renderTargetsTable(targets) {
       }
 
       // Thumbnail
-      const thumbSrc = t.has_png ? `/api/targets/${t.catId}/${t.objId}/image` : null;
+      const combParam = t.combination ? `?combination=${encodeURIComponent(t.combination)}` : "";
+      const thumbSrc = t.has_png ? `/api/targets/${t.catId}/${t.objId}/image${combParam}` : null;
       const thumbHtml = thumbSrc
-        ? `<div class="thumb-container" onclick="openImagePreview(${t.catId}, '${t.objId}')" title="Click to view full spectrum plot">
+        ? `<div class="thumb-container" onclick="openImagePreview(${t.catId}, '${t.objId}', '${t.obCode || ''}', '${t.combination || ''}')" title="Click to view full spectrum plot">
              <img src="${thumbSrc}" loading="lazy" alt="Spectrum thumbnail">
            </div>`
         : `<div class="thumb-container thumb-placeholder">No PNG</div>`;
@@ -1836,11 +1837,11 @@ function renderTargetsTable(targets) {
       const subclassHidden = state.hiddenColumns.has("subclass") ? "col-hidden" : "";
 
       return `
-      <tr data-catid="${t.catId}" data-objid="${t.objId}">
+      <tr data-catid="${t.catId}" data-objid="${t.objId}" data-combination="${t.combination || ''}">
         <td class="col-thumb ${thumbHidden}" data-col="thumb">${thumbHtml}</td>
         <td class="col-actions ${actionsHidden}" data-col="actions">
           <div class="action-buttons">
-            <button class="btn btn-sm btn-secondary" onclick="openTargetDetails(${t.catId}, '${t.objId}')" title="Inspect solver & line details">
+            <button class="btn btn-sm btn-secondary" onclick="openTargetDetails(${t.catId}, '${t.objId}', '${t.combination || ''}')" title="Inspect solver & line details">
               📋 Details
             </button>
           </div>
@@ -2758,11 +2759,17 @@ function zoomSkyMap(factor) {
   });
 }
 
-function highlightTableRow(catId, objId, scrollIntoView = true) {
+function highlightTableRow(catId, objId, combination = null, scrollIntoView = true) {
   document.querySelectorAll("#targetsTbody tr").forEach((row) => {
     row.classList.remove("row-highlighted");
   });
-  const targetRow = document.querySelector(`#targetsTbody tr[data-catid="${catId}"][data-objid="${objId}"]`);
+  const selector = combination
+    ? `#targetsTbody tr[data-catid="${catId}"][data-objid="${objId}"][data-combination="${combination}"]`
+    : `#targetsTbody tr[data-catid="${catId}"][data-objid="${objId}"]`;
+  let targetRow = document.querySelector(selector);
+  if (!targetRow && combination) {
+    targetRow = document.querySelector(`#targetsTbody tr[data-catid="${catId}"][data-objid="${objId}"]`);
+  }
   if (targetRow) {
     targetRow.classList.add("row-highlighted");
     if (scrollIntoView) {
@@ -2774,12 +2781,18 @@ function highlightTableRow(catId, objId, scrollIntoView = true) {
 // ----------------------------------------------------------------------------
 // Modal 1: Image Preview & Target Navigation
 // ----------------------------------------------------------------------------
-window.openImagePreview = function (catId, objId, obCode) {
+window.openImagePreview = function (catId, objId, obCode, combination = null) {
   let list = state.targets || [];
-  let index = list.findIndex((t) => t.catId == catId && String(t.objId) === String(objId));
+  let index = list.findIndex((t) => t.catId == catId && String(t.objId) === String(objId) && (!combination || t.combination === combination));
+  if (index === -1) {
+    index = list.findIndex((t) => t.catId == catId && String(t.objId) === String(objId));
+  }
 
   if (index === -1 && state.allSkyTargets && state.allSkyTargets.length > 0) {
-    const skyIdx = state.allSkyTargets.findIndex((t) => t.catId == catId && String(t.objId) === String(objId));
+    let skyIdx = state.allSkyTargets.findIndex((t) => t.catId == catId && String(t.objId) === String(objId) && (!combination || t.combination === combination));
+    if (skyIdx === -1) {
+      skyIdx = state.allSkyTargets.findIndex((t) => t.catId == catId && String(t.objId) === String(objId));
+    }
     if (skyIdx !== -1) {
       list = state.allSkyTargets;
       index = skyIdx;
@@ -2791,9 +2804,9 @@ window.openImagePreview = function (catId, objId, obCode) {
     state.imagePreviewIndex = index;
     displayImagePreview(list[index], index, list.length);
   } else {
-    state.imagePreviewList = [{ catId, objId, obCode }];
+    state.imagePreviewList = [{ catId, objId, obCode, combination }];
     state.imagePreviewIndex = 0;
-    displayImagePreview({ catId, objId, obCode }, 0, 1);
+    displayImagePreview({ catId, objId, obCode, combination }, 0, 1);
   }
 
   elements.imageModal.style.display = "flex";
@@ -2802,8 +2815,9 @@ window.openImagePreview = function (catId, objId, obCode) {
 function displayImagePreview(target, index, total) {
   state.activeTarget = { ...target };
 
+  const combParam = target.combination ? `?combination=${encodeURIComponent(target.combination)}` : "";
   elements.imageModalImg.style.opacity = "0.6";
-  elements.imageModalImg.src = `/api/targets/${target.catId}/${target.objId}/image`;
+  elements.imageModalImg.src = `/api/targets/${target.catId}/${target.objId}/image${combParam}`;
   elements.imageModalImg.onload = () => {
     elements.imageModalImg.style.opacity = "1";
   };
@@ -2811,8 +2825,9 @@ function displayImagePreview(target, index, total) {
     elements.imageModalImg.style.opacity = "1";
   };
 
-  elements.imageModalTitle.textContent = `Coadded Spectrum: ${target.obCode || ""} (objId: ${target.objId}, catId: ${target.catId})`;
-  elements.imageModalDownload.href = `/api/targets/${target.catId}/${target.objId}/image`;
+  const combText = target.combination ? ` [${target.combination}]` : "";
+  elements.imageModalTitle.textContent = `Coadded Spectrum: ${target.obCode || ""}${combText} (objId: ${target.objId}, catId: ${target.catId})`;
+  elements.imageModalDownload.href = `/api/targets/${target.catId}/${target.objId}/image${combParam}`;
 
   const isPageList = state.imagePreviewList === state.targets;
   let subText = `Target ${index + 1} of ${total}`;
@@ -2830,7 +2845,7 @@ function displayImagePreview(target, index, total) {
   const canNext = isPageList ? index < total - 1 || state.page < state.pages : index < total - 1;
 
   updateImageNavButtons(canPrev, canNext);
-  highlightTableRow(target.catId, target.objId);
+  highlightTableRow(target.catId, target.objId, target.combination);
 }
 
 function updateImageNavButtons(canPrev, canNext) {
@@ -3042,9 +3057,10 @@ async function loadSkyCutout(ra, dec) {
 // ----------------------------------------------------------------------------
 // Modal 2: Target Details
 // ----------------------------------------------------------------------------
-window.openTargetDetails = async function (catId, objId) {
+window.openTargetDetails = async function (catId, objId, combination = null) {
   try {
-    const res = await fetch(`/api/targets/${catId}/${objId}/details`);
+    const combParam = combination ? `?combination=${encodeURIComponent(combination)}` : "";
+    const res = await fetch(`/api/targets/${catId}/${objId}/details${combParam}`);
     if (!res.ok) throw new Error("Target details not found");
     const data = await res.json();
     state.activeTarget = data.target;
@@ -3209,17 +3225,18 @@ window.openTargetDetails = async function (catId, objId) {
 // ----------------------------------------------------------------------------
 // Modal 3: Interactive FITS Spectrum (Plotly.js)
 // ----------------------------------------------------------------------------
-window.openInteractiveSpectrumById = async function (catId, objId) {
+window.openInteractiveSpectrumById = async function (catId, objId, combination = null) {
   try {
-    const res = await fetch(`/api/targets/${catId}/${objId}/details`);
+    const combParam = combination ? `?combination=${encodeURIComponent(combination)}` : "";
+    const res = await fetch(`/api/targets/${catId}/${objId}/details${combParam}`);
     if (res.ok) {
       const data = await res.json();
       openInteractiveSpectrum(data.target);
     } else {
-      openInteractiveSpectrum({ catId, objId });
+      openInteractiveSpectrum({ catId, objId, combination });
     }
   } catch (e) {
-    openInteractiveSpectrum({ catId, objId });
+    openInteractiveSpectrum({ catId, objId, combination });
   }
 };
 
@@ -3227,11 +3244,13 @@ window.openInteractiveSpectrum = async function (target) {
   if (!target) return;
   const catId = target.catId;
   const objId = target.objId;
+  const combination = target.combination;
+  const combParam = combination ? `?combination=${encodeURIComponent(combination)}` : "";
 
   // If target lacks bestRedshift or classificationName (e.g., opened from minimal context), fetch full details
   if (target.bestRedshift === undefined && target.bestVelocity === undefined) {
     try {
-      const res = await fetch(`/api/targets/${catId}/${objId}/details`);
+      const res = await fetch(`/api/targets/${catId}/${objId}/details${combParam}`);
       if (res.ok) {
         const data = await res.json();
         target = { ...target, ...data.target };
@@ -3243,9 +3262,10 @@ window.openInteractiveSpectrum = async function (target) {
 
   state.activeTarget = target;
 
-  elements.spectrumModalTitle.textContent = `Interactive Spectrum: ${target.obCode || ""} (objId: ${objId})`;
-  elements.spectrumModalSub.textContent = `catId: ${catId} | Class: ${target.classificationName || "UNKNOWN"}`;
-  elements.downloadFitsBtn.href = `/api/targets/${catId}/${objId}/fits`;
+  const combText = target.combination ? ` [${target.combination}]` : "";
+  elements.spectrumModalTitle.textContent = `Interactive Spectrum: ${target.obCode || ""}${combText} (objId: ${objId})`;
+  elements.spectrumModalSub.textContent = `catId: ${catId} | Class: ${target.classificationName || "UNKNOWN"}${target.combination ? ` | comb: ${target.combination}` : ""}`;
+  elements.downloadFitsBtn.href = `/api/targets/${catId}/${objId}/fits${combParam}`;
 
   // Determine initial redshift
   let initZ = 0.0;
@@ -3268,7 +3288,8 @@ window.openInteractiveSpectrum = async function (target) {
   elements.plotlyLoading.style.display = "flex";
 
   try {
-    const res = await fetch(`/api/targets/${catId}/${objId}/spectrum?format=binary`);
+    const specUrl = `/api/targets/${catId}/${objId}/spectrum?format=binary${combination ? `&combination=${encodeURIComponent(combination)}` : ""}`;
+    const res = await fetch(specUrl);
     if (!res.ok) throw new Error("FITS spectrum file could not be loaded.");
 
     let data;

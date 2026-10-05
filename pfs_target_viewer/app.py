@@ -1091,7 +1091,7 @@ def get_sky_positions(
 
 
 @app.get("/api/targets/{catId}/{objId}/details")
-def get_target_details(catId: int, objId: str):
+def get_target_details(catId: int, objId: str, combination: Optional[str] = Query(None)):
     """Retrieve full solver, candidate, and line measurement details for a target."""
     conn = get_db()
     cur = conn.cursor()
@@ -1099,15 +1099,23 @@ def get_target_details(catId: int, objId: str):
         tbl = get_summary_table(conn)
         obj_id_int = int(objId)
         # Target summary info
-        cur.execute(f"SELECT * FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
+        if combination:
+            cur.execute(f"SELECT * FROM {tbl} WHERE catId = ? AND objId = ? AND combination = ?", (catId, obj_id_int, combination))
+        else:
+            cur.execute(f"SELECT * FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
         target_row = cur.fetchone()
         if not target_row:
             raise HTTPException(status_code=404, detail="Target not found in database")
         target_info = {k: sanitize_val(v) for k, v in dict(target_row).items()}
         target_info["objId"] = str(target_info["objId"])
 
+        # Determine target combination to filter child tables accurately
+        comb = target_info.get("combination")
+        comb_filter_sql = " AND combination = ?" if comb else ""
+        comb_params = (catId, obj_id_int, comb) if comb else (catId, obj_id_int)
+
         # Solver results
-        cur.execute("SELECT * FROM solver_results WHERE catId = ? AND objId = ?", (catId, obj_id_int))
+        cur.execute(f"SELECT * FROM solver_results WHERE catId = ? AND objId = ?{comb_filter_sql}", comb_params)
         solver_rows = []
         for r in cur.fetchall():
             rd = {k: sanitize_val(v) for k, v in dict(r).items()}
@@ -1116,12 +1124,12 @@ def get_target_details(catId: int, objId: str):
 
         # Redshift candidates
         cur.execute(
-            """
+            f"""
             SELECT * FROM redshift_candidates 
-            WHERE catId = ? AND objId = ? 
+            WHERE catId = ? AND objId = ?{comb_filter_sql}
             ORDER BY objectType, cRank ASC
             """,
-            (catId, obj_id_int),
+            comb_params,
         )
         candidate_rows = []
         for r in cur.fetchall():
@@ -1131,12 +1139,12 @@ def get_target_details(catId: int, objId: str):
 
         # Line measurements
         cur.execute(
-            """
+            f"""
             SELECT * FROM line_measurements 
-            WHERE catId = ? AND objId = ? 
+            WHERE catId = ? AND objId = ?{comb_filter_sql}
             ORDER BY objectType, lineWave ASC
             """,
-            (catId, obj_id_int),
+            comb_params,
         )
         line_rows = []
         for r in cur.fetchall():
@@ -1173,6 +1181,7 @@ def get_target_details(catId: int, objId: str):
 def get_spectrum_data(
     catId: int,
     objId: str,
+    combination: Optional[str] = Query(None),
     format: Optional[str] = Query(None, description="Output format: 'binary' (default) or 'json'"),
     request: Request = None,
 ):
@@ -1186,12 +1195,15 @@ def get_spectrum_data(
     tbl = get_summary_table(conn)
     has_file_cols = check_db_file_columns(conn)
     file_cols_sql = ", fits_path, png_path" if has_file_cols else ""
-    cur.execute(f"SELECT obCode, combination {file_cols_sql} FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
+    if combination:
+        cur.execute(f"SELECT obCode, combination {file_cols_sql} FROM {tbl} WHERE catId = ? AND objId = ? AND combination = ?", (catId, obj_id_int, combination))
+    else:
+        cur.execute(f"SELECT obCode, combination {file_cols_sql} FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
     row = cur.fetchone()
     conn.close()
 
     ob_code = row["obCode"] if row else None
-    comb_val = row["combination"] if (row and "combination" in row.keys()) else None
+    comb_val = row["combination"] if (row and "combination" in row.keys()) else combination
     known_fits = row["fits_path"] if (row and has_file_cols and "fits_path" in row.keys()) else None
 
     fits_file, _ = find_files(catId, obj_id_int, ob_code, combination=comb_val, known_fits_path=known_fits)
@@ -1336,7 +1348,7 @@ def get_spectrum_data(
 
 
 @app.get("/api/targets/{catId}/{objId}/image")
-def get_spectrum_image(catId: int, objId: str):
+def get_spectrum_image(catId: int, objId: str, combination: Optional[str] = Query(None)):
     """Return PNG spectrum plot image."""
     obj_id_int = int(objId)
     conn = get_db()
@@ -1344,21 +1356,25 @@ def get_spectrum_image(catId: int, objId: str):
     tbl = get_summary_table(conn)
     has_file_cols = check_db_file_columns(conn)
     file_cols_sql = ", png_path" if has_file_cols else ""
-    cur.execute(f"SELECT obCode {file_cols_sql} FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
+    if combination:
+        cur.execute(f"SELECT obCode, combination {file_cols_sql} FROM {tbl} WHERE catId = ? AND objId = ? AND combination = ?", (catId, obj_id_int, combination))
+    else:
+        cur.execute(f"SELECT obCode, combination {file_cols_sql} FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
     row = cur.fetchone()
     conn.close()
 
     ob_code = row["obCode"] if row else None
+    comb_val = row["combination"] if (row and "combination" in row.keys()) else combination
     known_png = row["png_path"] if (row and has_file_cols and "png_path" in row.keys()) else None
 
-    _, png_file = find_files(catId, obj_id_int, ob_code, known_png_path=known_png)
+    _, png_file = find_files(catId, obj_id_int, ob_code, combination=comb_val, known_png_path=known_png)
     if not png_file or not os.path.exists(png_file):
         raise HTTPException(status_code=404, detail="Spectrum PNG image not found")
     return FileResponse(png_file, media_type="image/png")
 
 
 @app.get("/api/targets/{catId}/{objId}/fits")
-def download_fits(catId: int, objId: str):
+def download_fits(catId: int, objId: str, combination: Optional[str] = Query(None)):
     """Download raw FITS file."""
     obj_id_int = int(objId)
     conn = get_db()
@@ -1366,12 +1382,15 @@ def download_fits(catId: int, objId: str):
     tbl = get_summary_table(conn)
     has_file_cols = check_db_file_columns(conn)
     file_cols_sql = ", fits_path" if has_file_cols else ""
-    cur.execute(f"SELECT obCode, combination {file_cols_sql} FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
+    if combination:
+        cur.execute(f"SELECT obCode, combination {file_cols_sql} FROM {tbl} WHERE catId = ? AND objId = ? AND combination = ?", (catId, obj_id_int, combination))
+    else:
+        cur.execute(f"SELECT obCode, combination {file_cols_sql} FROM {tbl} WHERE catId = ? AND objId = ?", (catId, obj_id_int))
     row = cur.fetchone()
     conn.close()
 
     ob_code = row["obCode"] if row else None
-    comb_val = row["combination"] if (row and "combination" in row.keys()) else None
+    comb_val = row["combination"] if (row and "combination" in row.keys()) else combination
     known_fits = row["fits_path"] if (row and has_file_cols and "fits_path" in row.keys()) else None
 
     fits_file, _ = find_files(catId, obj_id_int, ob_code, combination=comb_val, known_fits_path=known_fits)

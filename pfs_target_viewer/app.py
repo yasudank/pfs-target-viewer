@@ -19,7 +19,7 @@ import threading
 import urllib.request
 from collections import OrderedDict
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import numpy as np
 from pydantic import BaseModel
 try:
@@ -1493,16 +1493,102 @@ def sort_cached_rows(rows: List[dict], sort_by: Optional[str], order: Optional[s
     return valid + nulls
 
 
-def strip_trailing_order_by(sql: str) -> str:
-    """Strip the outermost top-level ORDER BY clause while preserving any trailing LIMIT/OFFSET.
-
-    Uses backward scanning and parenthesis/quote depth tracking to safely avoid stripping
-    ORDER BY inside subqueries or string literals.
-    """
+def has_top_level_limit(sql: str) -> bool:
+    """Check if the SQL query contains a top-level LIMIT clause (outside subqueries and string literals)."""
     clean = sql.strip().rstrip(";").rstrip()
     upper = clean.upper()
+    depth = 0
+    in_quote = False
+    quote_char = ""
+    idx = 0
+    clean_len = len(clean)
 
-    # Find the last top-level ORDER BY
+    while idx < clean_len:
+        ch = clean[idx]
+        if in_quote:
+            if ch == quote_char:
+                in_quote = False
+        elif ch in ("'", '"', '`'):
+            in_quote = True
+            quote_char = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            if upper[idx : idx + 5] == "LIMIT":
+                prev_ok = (idx == 0 or not (upper[idx - 1].isalnum() or upper[idx - 1] == "_"))
+                next_ok = (idx + 5 >= clean_len or not (upper[idx + 5].isalnum() or upper[idx + 5] == "_"))
+                if prev_ok and next_ok:
+                    return True
+        idx += 1
+    return False
+
+
+def extract_trailing_order_by(sql: str) -> Optional[Tuple[str, str]]:
+    """Extract (column_name, direction) from a top-level trailing ORDER BY clause if present."""
+    clean = sql.strip().rstrip(";").rstrip()
+    upper = clean.upper()
+    search_from = len(upper)
+    while True:
+        pos = upper.rfind("ORDER", 0, search_from)
+        if pos < 0:
+            return None
+
+        if pos > 0 and (upper[pos - 1].isalnum() or upper[pos - 1] == "_"):
+            search_from = pos
+            continue
+
+        rest = upper[pos + 5:].lstrip()
+        if not rest.startswith("BY"):
+            search_from = pos
+            continue
+
+        by_idx = upper.find("BY", pos + 5)
+        after_by = by_idx + 2
+        if after_by < len(upper) and (upper[after_by].isalnum() or upper[after_by] == "_"):
+            search_from = pos
+            continue
+
+        depth = 0
+        in_quote = False
+        quote_char = ""
+        for ch in clean[:pos]:
+            if in_quote:
+                if ch == quote_char:
+                    in_quote = False
+            elif ch in ("'", '"', '`'):
+                in_quote = True
+                quote_char = ch
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth = max(0, depth - 1)
+
+        if depth != 0 or in_quote:
+            search_from = pos
+            continue
+
+        order_part = clean[after_by:].strip()
+        m = re.match(r"^([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)?)(?:\s+(ASC|DESC))?", order_part, re.IGNORECASE)
+        if m:
+            col = m.group(1).split(".")[-1]
+            direction = (m.group(2) or "asc").lower()
+            return col, direction
+        return None
+
+
+def strip_trailing_order_by(sql: str) -> str:
+    """Strip the outermost top-level ORDER BY clause ONLY when there is no top-level LIMIT.
+
+    If a top-level LIMIT is present, ORDER BY must be preserved because it determines
+    which rows are selected by the LIMIT clause.
+    """
+    clean = sql.strip().rstrip(";").rstrip()
+    if has_top_level_limit(clean):
+        return clean
+
+    upper = clean.upper()
     search_from = len(upper)
     while True:
         pos = upper.rfind("ORDER", 0, search_from)
@@ -1547,41 +1633,7 @@ def strip_trailing_order_by(sql: str) -> str:
             search_from = pos
             continue
 
-        # Top-level ORDER BY found at pos! Now scan forward to find any top-level LIMIT clause
-        limit_pos = -1
-        depth = 0
-        in_quote = False
-        quote_char = ""
-        idx = after_by
-        clean_len = len(clean)
-
-        while idx < clean_len:
-            ch = clean[idx]
-            if in_quote:
-                if ch == quote_char:
-                    in_quote = False
-            elif ch in ("'", '"', '`'):
-                in_quote = True
-                quote_char = ch
-            elif ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth = max(0, depth - 1)
-            elif depth == 0:
-                if upper[idx : idx + 5] == "LIMIT":
-                    prev_ok = (idx == 0 or not (upper[idx - 1].isalnum() or upper[idx - 1] == "_"))
-                    next_ok = (idx + 5 >= clean_len or not (upper[idx + 5].isalnum() or upper[idx + 5] == "_"))
-                    if prev_ok and next_ok:
-                        limit_pos = idx
-                        break
-            idx += 1
-
-        prefix = clean[:pos].rstrip()
-        if limit_pos >= 0:
-            limit_clause = clean[limit_pos:].strip()
-            return f"{prefix} {limit_clause}"
-        else:
-            return prefix
+        return clean[:pos].rstrip()
 
 
 DISALLOWED_SQL_PATTERNS = [
@@ -1900,8 +1952,15 @@ def execute_sql_query(req: SqlQueryRequest):
     page = max(1, req.page)
     offset = (page - 1) * limit
 
-    # Check cache first if not explicitly forced to refresh
+    has_limit = has_top_level_limit(optimized_sql)
     cache_key_source = strip_trailing_order_by(optimized_sql)
+
+    # For queries without top-level LIMIT, extract user-written ORDER BY if client did not supply sort_by
+    initial_sort = extract_trailing_order_by(optimized_sql) if not has_limit else None
+    effective_sort_by = req.sort_by or (initial_sort[0] if initial_sort else None)
+    effective_order = req.order if req.sort_by else (initial_sort[1] if initial_sort else (req.order or "asc"))
+
+    # Check cache first if not explicitly forced to refresh
     if not req.force_refresh:
         cached = SQL_CACHE.get(cache_key_source)
         if cached:
@@ -1909,8 +1968,12 @@ def execute_sql_query(req: SqlQueryRequest):
             total = cached["total"]
             pages = max(1, math.ceil(total / limit)) if total > 0 else 1
 
-            # Sort full dataset in memory
-            sorted_rows = sort_cached_rows(all_rows, req.sort_by, req.order)
+            # When top-level LIMIT is present, keep exact database-returned order.
+            # Otherwise, sort full dataset in memory.
+            if has_limit:
+                sorted_rows = all_rows
+            else:
+                sorted_rows = sort_cached_rows(all_rows, effective_sort_by, effective_order)
             page_rows = sorted_rows[offset : offset + limit]
 
             # Send sky targets only if requested (skip on page flip / sort to save bandwidth)
@@ -1937,18 +2000,18 @@ def execute_sql_query(req: SqlQueryRequest):
     set_query_timeout(conn, timeout_sec=15.0)
     cur = conn.cursor()
     try:
-        # Wrap query with target_summary for identity auto-projection if applicable
+        # If top-level LIMIT is present, strip_trailing_order_by preserves ORDER BY so LIMIT selects the correct ordered rows.
+        # Otherwise, ORDER BY is stripped before wrapping so the full unordered query is executed and cached.
+        query_for_exec = strip_trailing_order_by(optimized_sql)
         try:
-            executable_sql, user_cols, has_identity = wrap_query_with_target_summary(conn, optimized_sql)
+            executable_sql, user_cols, has_identity = wrap_query_with_target_summary(conn, query_for_exec)
         except Exception as wrap_err:
-            executable_sql = optimized_sql
+            executable_sql = query_for_exec
             user_cols = []
             has_identity = False
 
-        # Execute base query with ORDER BY stripped (preserving LIMIT/OFFSET) to cache result set
-        unordered_sql = strip_trailing_order_by(executable_sql)
         try:
-            cur.execute(unordered_sql)
+            cur.execute(executable_sql)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Query Execution Error: {e}")
 
@@ -2005,8 +2068,12 @@ def execute_sql_query(req: SqlQueryRequest):
             "sky_targets": sky_targets,
         })
 
-        # Sort full dataset by requested column if specified
-        sorted_rows = sort_cached_rows(all_clean_rows, req.sort_by, req.order)
+        # When top-level LIMIT is present, keep exact database-returned order.
+        # Otherwise, sort full dataset in memory.
+        if has_limit:
+            sorted_rows = all_clean_rows
+        else:
+            sorted_rows = sort_cached_rows(all_clean_rows, effective_sort_by, effective_order)
         page_rows = sorted_rows[offset : offset + limit]
 
         duration_ms = round((time.time() - t_start) * 1000.0, 1)

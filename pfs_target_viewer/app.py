@@ -298,6 +298,12 @@ def configure_paths(
                 kwargs={"force": False, "db_path": DB_PATH},
                 daemon=True,
             ).start()
+        if "load_or_build_spectral_lines_cache" in globals() and os.path.exists(DB_PATH):
+            threading.Thread(
+                target=load_or_build_spectral_lines_cache,
+                kwargs={"force": False, "db_path": DB_PATH},
+                daemon=True,
+            ).start()
 
 
 # Initialize defaults
@@ -305,10 +311,15 @@ configure_paths()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Pre-warm master sky cache in background thread when server starts
+    # Pre-warm master sky cache and spectral lines cache in background thread when server starts
     if os.path.exists(DB_PATH):
         threading.Thread(
             target=load_or_build_master_sky_cache,
+            kwargs={"db_path": DB_PATH},
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=load_or_build_spectral_lines_cache,
             kwargs={"db_path": DB_PATH},
             daemon=True,
         ).start()
@@ -2124,73 +2135,119 @@ KNOWN_SPECTRAL_REST_WAVELENGTHS = {
 }
 
 _SPECTRAL_LINES_CACHE: Optional[dict] = None
+_SPECTRAL_LINES_DB_MTIME: float = 0.0
+_SPECTRAL_LINES_LOCK = threading.Lock()
+
+
+def load_or_build_spectral_lines_cache(force: bool = False, db_path: Optional[str] = None) -> Optional[dict]:
+    """
+    Ensure the spectral lines catalog is cached and up-to-date with the database.
+    - If spectral_lines_cache.json exists and mtime >= db_mtime, load it (<1ms).
+    - If DB is newer than cache (or cache is missing or force=True), re-aggregate from DB and save cache.
+    """
+    global _SPECTRAL_LINES_CACHE, _SPECTRAL_LINES_DB_MTIME
+
+    active_db = os.path.abspath(db_path or DB_PATH) if (db_path or DB_PATH) else ""
+    if not active_db or not os.path.exists(active_db):
+        return _SPECTRAL_LINES_CACHE
+
+    db_mtime = os.path.getmtime(active_db)
+
+    # In-memory fast path: DB hasn't been modified since we cached it
+    if not force and _SPECTRAL_LINES_CACHE is not None and _SPECTRAL_LINES_DB_MTIME >= db_mtime:
+        return _SPECTRAL_LINES_CACHE
+
+    with _SPECTRAL_LINES_LOCK:
+        if not force and _SPECTRAL_LINES_CACHE is not None and _SPECTRAL_LINES_DB_MTIME >= db_mtime:
+            return _SPECTRAL_LINES_CACHE
+
+        candidate_cache_paths = [
+            os.path.join(os.path.dirname(active_db), "spectral_lines_cache.json"),
+            os.path.join(DATA_DIR, "spectral_lines_cache.json"),
+            os.path.join(os.path.dirname(__file__), "..", "extracted_targets", "spectral_lines_cache.json"),
+            os.path.join(os.path.dirname(__file__), "..", "spectral_lines_cache.json"),
+        ]
+
+        # 1. Try reading disk cache if valid and newer than or equal to DB modification time
+        if not force:
+            for p in candidate_cache_paths:
+                if p and os.path.exists(p) and os.path.getmtime(p) >= db_mtime:
+                    try:
+                        with open(p, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                            if data.get("lines") and "restWave_nm" in data["lines"][0]:
+                                _SPECTRAL_LINES_CACHE = data
+                                _SPECTRAL_LINES_DB_MTIME = db_mtime
+                                return _SPECTRAL_LINES_CACHE
+                    except Exception:
+                        pass
+
+        # 2. Re-aggregate from active database
+        try:
+            conn = sqlite3.connect(f"file:{active_db}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT lineName, count(*) as count
+                FROM line_measurements
+                WHERE lineName IS NOT NULL AND lineName != ''
+                GROUP BY lineName
+                ORDER BY count DESC
+            """)
+            rows = cur.fetchall()
+            lines = []
+            for r in rows:
+                name = r["lineName"]
+                cnt = r["count"]
+                rest_nm = KNOWN_SPECTRAL_REST_WAVELENGTHS.get(name)
+                rest_A = round(rest_nm * 10.0, 1) if rest_nm is not None else None
+                lines.append({
+                    "lineName": name,
+                    "count": cnt,
+                    "restWave_nm": rest_nm,
+                    "restWave_A": rest_A,
+                })
+            _SPECTRAL_LINES_CACHE = {
+                "total_lines": len(lines),
+                "lines": lines,
+            }
+            _SPECTRAL_LINES_DB_MTIME = db_mtime
+            conn.close()
+
+            # Save updated cache to disk
+            for save_p in [candidate_cache_paths[0], candidate_cache_paths[1], candidate_cache_paths[2]]:
+                if save_p and os.path.dirname(save_p) and os.path.exists(os.path.dirname(save_p)):
+                    try:
+                        with open(save_p, "w", encoding="utf-8") as f:
+                            json.dump(_SPECTRAL_LINES_CACHE, f, indent=2)
+                    except Exception:
+                        pass
+
+            print(f"  ⚡ Updated spectral lines catalog cache ({len(lines)} lines) for {active_db}")
+            return _SPECTRAL_LINES_CACHE
+        except Exception as e:
+            print(f"Warning: Failed to re-aggregate spectral lines from database: {e}")
+            # Fallback to existing disk cache if available
+            for p in candidate_cache_paths:
+                if p and os.path.exists(p):
+                    try:
+                        with open(p, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                            if data.get("lines") and "restWave_nm" in data["lines"][0]:
+                                _SPECTRAL_LINES_CACHE = data
+                                return _SPECTRAL_LINES_CACHE
+                    except Exception:
+                        pass
+            return _SPECTRAL_LINES_CACHE
 
 
 @app.get("/api/sql/lines")
 def get_spectral_lines():
     """Retrieve metadata catalog of measured spectral lines in line_measurements with rest-frame wavelengths."""
-    global _SPECTRAL_LINES_CACHE
-    if _SPECTRAL_LINES_CACHE is not None:
-        return _SPECTRAL_LINES_CACHE
-
-    active_db = DB_PATH or ""
-    candidate_cache_paths = [
-        os.path.join(os.path.dirname(active_db), "spectral_lines_cache.json") if active_db else "",
-        os.path.join(DATA_DIR, "spectral_lines_cache.json"),
-        os.path.join(os.path.dirname(__file__), "..", "extracted_targets", "spectral_lines_cache.json"),
-        os.path.join(os.path.dirname(__file__), "..", "spectral_lines_cache.json"),
-    ]
-
-    for p in candidate_cache_paths:
-        if p and os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if data.get("lines") and "restWave_nm" in data["lines"][0]:
-                        _SPECTRAL_LINES_CACHE = data
-                        return _SPECTRAL_LINES_CACHE
-            except Exception:
-                pass
-
-    conn = get_db()
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            SELECT lineName, count(*) as count
-            FROM line_measurements
-            WHERE lineName IS NOT NULL AND lineName != ''
-            GROUP BY lineName
-            ORDER BY count DESC
-        """)
-        rows = cur.fetchall()
-        lines = []
-        for r in rows:
-            name = r["lineName"]
-            cnt = r["count"]
-            rest_nm = KNOWN_SPECTRAL_REST_WAVELENGTHS.get(name)
-            rest_A = round(rest_nm * 10.0, 1) if rest_nm is not None else None
-            lines.append({
-                "lineName": name,
-                "count": cnt,
-                "restWave_nm": rest_nm,
-                "restWave_A": rest_A,
-            })
-        _SPECTRAL_LINES_CACHE = {
-            "total_lines": len(lines),
-            "lines": lines,
-        }
-
-        save_path = candidate_cache_paths[0] or candidate_cache_paths[1]
-        if save_path:
-            try:
-                with open(save_path, "w", encoding="utf-8") as f:
-                    json.dump(_SPECTRAL_LINES_CACHE, f, indent=2)
-            except Exception:
-                pass
-
-        return _SPECTRAL_LINES_CACHE
-    finally:
-        conn.close()
+    catalog = load_or_build_spectral_lines_cache(db_path=DB_PATH)
+    if catalog is not None:
+        return catalog
+    raise HTTPException(status_code=500, detail="Failed to load spectral lines catalog")
 
 
 @app.post("/api/sql/validate")

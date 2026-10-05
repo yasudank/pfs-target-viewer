@@ -106,8 +106,63 @@ PNG_FILE_SET: Set[str] = set()
 _FILES_INDEXED: bool = False
 
 
+def count_extracted_files() -> Tuple[int, int]:
+    """
+    Count available FITS and PNG files in DATA_DIR.
+    Checks DB index first if available, otherwise fast-scans flat or sharded directory.
+    """
+    if os.path.exists(DB_PATH):
+        try:
+            conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(target_summary)")
+            cols = {row[1] for row in cur.fetchall()}
+            tbl = "target_summary"
+            if "fits_path" in cols and "png_path" in cols:
+                cur.execute(f"SELECT COUNT(fits_path), COUNT(png_path) FROM {tbl} WHERE fits_path IS NOT NULL OR png_path IS NOT NULL")
+                row = cur.fetchone()
+                conn.close()
+                if row and (row[0] > 0 or row[1] > 0):
+                    return int(row[0]), int(row[1])
+            conn.close()
+        except Exception:
+            pass
+
+    def scan_dir(base_dir: str, ext: str) -> int:
+        if not os.path.exists(base_dir):
+            return 0
+        total = 0
+        try:
+            with os.scandir(base_dir) as it:
+                for entry in it:
+                    if entry.is_file() and entry.name.endswith(ext):
+                        total += 1
+                    elif entry.is_dir():
+                        try:
+                            with os.scandir(entry.path) as sub_it:
+                                for sub_entry in sub_it:
+                                    if sub_entry.is_file() and sub_entry.name.endswith(ext):
+                                        total += 1
+                                    elif sub_entry.is_dir():
+                                        try:
+                                            with os.scandir(sub_entry.path) as slot_it:
+                                                for f in slot_it:
+                                                    if f.is_file() and f.name.endswith(ext):
+                                                        total += 1
+                                        except OSError:
+                                            pass
+                        except OSError:
+                            pass
+        except OSError:
+            pass
+        return total
+
+    return scan_dir(FITS_DIR, ".fits"), scan_dir(PNG_DIR, ".png")
+
+
 def index_extracted_files(force: bool = False):
-    """Index FITS and PNG filenames once into memory sets for instant O(1) lookups."""
+    """Index FITS and PNG filenames if flat directory, or detect sharded structure."""
     global FITS_FILE_SET, PNG_FILE_SET, _FILES_INDEXED
     if _FILES_INDEXED and not force:
         return
@@ -115,23 +170,37 @@ def index_extracted_files(force: bool = False):
     t0 = time.time()
     fits_count = 0
     png_count = 0
+    is_sharded = False
 
     if os.path.exists(FITS_DIR):
         try:
-            FITS_FILE_SET = set(os.listdir(FITS_DIR))
-            fits_count = len(FITS_FILE_SET)
+            entries = os.listdir(FITS_DIR)
+            fits_files = [f for f in entries if f.endswith(".fits")]
+            if fits_files:
+                FITS_FILE_SET = set(fits_files)
+                fits_count = len(FITS_FILE_SET)
+            elif any(os.path.isdir(os.path.join(FITS_DIR, e)) for e in entries):
+                is_sharded = True
         except Exception as e:
             print(f"Warning: Failed reading FITS dir {FITS_DIR}: {e}")
 
     if os.path.exists(PNG_DIR):
         try:
-            PNG_FILE_SET = set(os.listdir(PNG_DIR))
-            png_count = len(PNG_FILE_SET)
+            entries = os.listdir(PNG_DIR)
+            png_files = [p for p in entries if p.endswith(".png")]
+            if png_files:
+                PNG_FILE_SET = set(png_files)
+                png_count = len(PNG_FILE_SET)
+            elif any(os.path.isdir(os.path.join(PNG_DIR, e)) for e in entries):
+                is_sharded = True
         except Exception as e:
             print(f"Warning: Failed reading PNG dir {PNG_DIR}: {e}")
 
     _FILES_INDEXED = True
-    print(f"  ⚡ In-memory file index built in {time.time()-t0:.3f}s: {fits_count:,} FITS, {png_count:,} PNG files.")
+    if is_sharded:
+        pass
+    elif fits_count > 0 or png_count > 0:
+        print(f"  ⚡ In-memory flat file index built in {time.time()-t0:.3f}s: {fits_count:,} FITS, {png_count:,} PNG files.")
 
 
 def is_blank_or_out_of_coverage(data: bytes) -> bool:
@@ -399,7 +468,7 @@ def find_files(
     shard_slot = f"{int(obj_id) % 1000:03d}"
     shard_sub = os.path.join(str(cat_id), shard_slot)
 
-    # 2. Check sharded location on disk
+    # 2. Check sharded location on disk (2-level catId/slot/ and 1-level catId/)
     if not fits_path:
         shard_fits_dir = os.path.join(FITS_DIR, shard_sub)
         for base in candidates_base:
@@ -408,6 +477,14 @@ def find_files(
             if os.path.exists(p):
                 fits_path = p
                 break
+        if not fits_path:
+            cat_fits_dir = os.path.join(FITS_DIR, str(cat_id))
+            for base in candidates_base:
+                fn = f"pfsObject_{base}.fits"
+                p = os.path.join(cat_fits_dir, fn)
+                if os.path.exists(p):
+                    fits_path = p
+                    break
 
     if not png_path:
         shard_png_dir = os.path.join(PNG_DIR, shard_sub)
@@ -417,6 +494,14 @@ def find_files(
             if os.path.exists(p):
                 png_path = p
                 break
+        if not png_path:
+            cat_png_dir = os.path.join(PNG_DIR, str(cat_id))
+            for base in candidates_base:
+                pn = f"spec_{base}.png"
+                p = os.path.join(cat_png_dir, pn)
+                if os.path.exists(p):
+                    png_path = p
+                    break
 
     if fits_path and png_path:
         return fits_path, png_path
@@ -2215,8 +2300,7 @@ Examples:
         db_status = "⚠️  NOT FOUND"
 
     if os.path.exists(DATA_DIR):
-        fits_count = len(glob.glob(os.path.join(FITS_DIR, "*.fits"))) if os.path.exists(FITS_DIR) else 0
-        png_count = len(glob.glob(os.path.join(PNG_DIR, "*.png"))) if os.path.exists(PNG_DIR) else 0
+        fits_count, png_count = count_extracted_files()
         data_status = f"✅ Found ({fits_count:,} FITS, {png_count:,} PNG)"
     else:
         data_status = "⚠️  NOT FOUND"

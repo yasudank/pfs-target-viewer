@@ -444,6 +444,8 @@ def main():
                 "catId": catId,
                 "objId": objId,
                 "combination": combination,
+                "nvisit": None,
+                "exptime": None,
             }
             if not args.skip_fits:
                 rec["has_fits"] = 1 if saved_fits_rel else 0
@@ -495,6 +497,17 @@ def main():
                 update_cols.append("exptime = COALESCE(:exptime, exptime)")
 
             if update_cols:
+                # Ensure all binding parameter keys exist across every record in batch
+                for r in db_updates:
+                    r.setdefault("nvisit", None)
+                    r.setdefault("exptime", None)
+                    if not args.skip_fits:
+                        r.setdefault("has_fits", 0)
+                        r.setdefault("fits_path", None)
+                    if not args.skip_png:
+                        r.setdefault("has_png", 0)
+                        r.setdefault("png_path", None)
+
                 set_clause = ", ".join(update_cols)
                 where_clause = "catId = :catId AND objId = :objId" + (" AND combination = :combination" if has_comb else "")
                 sql = f"UPDATE target_summary SET {set_clause} WHERE {where_clause}"

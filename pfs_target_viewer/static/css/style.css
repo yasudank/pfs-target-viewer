@@ -1652,6 +1652,13 @@ th.col-hidden, td.col-hidden {
   margin: 0 auto;
 }
 
+/* Ensure graticules and spatial view region shading do not block mouse interaction on markers */
+.sky-plotly-container .scatterlayer path.js-fill,
+.sky-plotly-container .scatterlayer path.js-line,
+.sky-plotly-container .plot .scatterlayer .trace:not(.scattergl) path:not(.point) {
+  pointer-events: none !important;
+}
+
 /* Row highlight when clicked or hovered from map */
 .row-highlighted {
   background: rgba(56, 189, 248, 0.15) !important;

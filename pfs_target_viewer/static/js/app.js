@@ -2516,7 +2516,7 @@ function getSpatialFilterBoxTrace(filter, ra0Deg) {
     },
     fill: "toself",
     fillcolor: "rgba(56, 189, 248, 0.12)",
-    hoverinfo: "none",
+    hoverinfo: "skip",
     showlegend: true,
   };
 }
@@ -2759,6 +2759,14 @@ function getMollweideAnnotations(ra0Deg = 180) {
   return annotations;
 }
 
+function makeSkyOverlaysPassThrough(el) {
+  if (!el) return;
+  const paths = el.querySelectorAll(".scatterlayer path.js-fill, .scatterlayer path.js-line, .plot .scatterlayer .trace:not(.scattergl) path:not(.point)");
+  paths.forEach((p) => {
+    p.style.pointerEvents = "none";
+  });
+}
+
 function renderSkyMap(pageTargets) {
   if (!elements.skyPlotly) return;
 
@@ -2907,6 +2915,16 @@ function renderSkyMap(pageTargets) {
 
   // Base graticules and boundary
   const traces = [...getMollweideGraticules(state.skyCentralRa)];
+
+  // If a spatial view filter is active, draw the bounding box region BEFORE target markers
+  // so the semi-transparent shade and boundary stay underneath all markers and never block mouse interaction
+  if (state.spatialFilter) {
+    const boxTrace = getSpatialFilterBoxTrace(state.spatialFilter, state.skyCentralRa);
+    if (boxTrace) {
+      traces.push(boxTrace);
+    }
+  }
+
   const plotType = isAll ? "scattergl" : "scatter";
 
   ["GALAXY", "QSO", "STAR", "UNKNOWN"].forEach((key) => {
@@ -2936,14 +2954,6 @@ function renderSkyMap(pageTargets) {
       });
     }
   });
-
-  // If a spatial view filter is active, draw the bounding box region first (underneath highlights)
-  if (state.spatialFilter) {
-    const boxTrace = getSpatialFilterBoxTrace(state.spatialFilter, state.skyCentralRa);
-    if (boxTrace) {
-      traces.push(boxTrace);
-    }
-  }
 
   // If in "All" mode, add an overlay trace for current page targets (white circle rings)
   if (isAll && pageTargets && pageTargets.length > 0) {
@@ -3034,6 +3044,9 @@ function renderSkyMap(pageTargets) {
 
   Plotly.react(elements.skyPlotly, traces, layout, config);
 
+  // Ensure background overlay elements (spatial filter box, graticules) do not intercept mouse events
+  makeSkyOverlaysPassThrough(elements.skyPlotly);
+
   // If a view range was saved (e.g. Filter Table by View), enforce it via relayout
   if (state.skySavedViewRange) {
     Plotly.relayout(elements.skyPlotly, {
@@ -3042,6 +3055,7 @@ function renderSkyMap(pageTargets) {
       "xaxis.autorange": false,
       "yaxis.autorange": false,
     });
+    makeSkyOverlaysPassThrough(elements.skyPlotly);
   }
 
   if (!elements.skyPlotly._hasRelayoutHandler) {

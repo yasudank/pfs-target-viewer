@@ -1696,8 +1696,8 @@ def filter_rows_spatially(
 
     filtered = []
     for r in rows:
-        ra = r.get("ra")
-        dec = r.get("dec")
+        ra = r.get("ra") if "ra" in r else r.get("RA", r.get("coords_ra"))
+        dec = r.get("dec") if "dec" in r else r.get("DEC", r.get("coords_dec"))
         if ra is None or dec is None:
             continue
         try:
@@ -2388,6 +2388,7 @@ def execute_sql_query(req: SqlQueryRequest):
                 "columns": cached["columns"],
                 "targets": page_rows,
                 "sky_targets": sky_targets,
+                "master_sky_targets": None if req.skip_sky else cached.get("sky_targets", []),
                 "cached": True,
             }
 
@@ -2438,9 +2439,9 @@ def execute_sql_query(req: SqlQueryRequest):
                 clean_item["objId"] = str(clean_item["objId"])
             all_clean_rows.append(clean_item)
 
-            if has_identity and not req.skip_sky:
-                ra_val = clean_item.get("ra")
-                dec_val = clean_item.get("dec")
+            if has_identity:
+                ra_val = clean_item.get("ra") if "ra" in clean_item else clean_item.get("RA", clean_item.get("coords_ra"))
+                dec_val = clean_item.get("dec") if "dec" in clean_item else clean_item.get("DEC", clean_item.get("coords_dec"))
                 if ra_val is not None and dec_val is not None:
                     sky_targets.append({
                         "catId": clean_item.get("catId"),
@@ -2490,6 +2491,7 @@ def execute_sql_query(req: SqlQueryRequest):
             "columns": user_cols,
             "targets": page_rows,
             "sky_targets": effective_sky,
+            "master_sky_targets": None if req.skip_sky else sky_targets,
             "cached": False,
         }
     finally:
@@ -2531,6 +2533,7 @@ Examples:
     parser.add_argument("--port", type=int, default=8090, help="Port to listen on (default: 8090)")
     parser.add_argument("--db", default=None, help="Explicit path to pfs_metadata.sqlite3")
     parser.add_argument("--data-dir", default=None, help="Explicit path to extracted_targets directory")
+    parser.add_argument("--reload", action="store_true", help="Enable auto-reload on code changes")
     args = parser.parse_args()
 
     chosen_dir = args.opt_dir or args.target_dir
@@ -2564,4 +2567,8 @@ Examples:
         print("     and 'extracted_targets/' (or run download_data.sh).")
     print("=" * 70)
 
-    uvicorn.run(app, host=args.host, port=args.port)
+    if args.reload:
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        uvicorn.run("app:app", host=args.host, port=args.port, reload=True, app_dir=app_dir)
+    else:
+        uvicorn.run(app, host=args.host, port=args.port)

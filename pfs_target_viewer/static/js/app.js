@@ -383,6 +383,8 @@ function setFilterMode(mode) {
     if (elements.standardFilterContainer) elements.standardFilterContainer.style.display = "block";
     if (state.activeSqlQuery) {
       clearSqlQueryFilter();
+      updatePlottedSkyTargets();
+      fetchTargets();
     }
   }
 }
@@ -748,7 +750,7 @@ async function validateSql() {
 }
 
 async function runSqlQuery(page = 1, skipSky = false, forceRefresh = false) {
-  const query = elements.sqlQueryInput.value.trim();
+  const query = (state.activeSqlQuery || elements.sqlQueryInput.value).trim();
   if (!query) {
     setSqlFeedback("error", "Query editor is empty. Please enter an SQL query or select a template.");
     return;
@@ -829,12 +831,20 @@ async function runSqlQuery(page = 1, skipSky = false, forceRefresh = false) {
     const filterMsg = state.spatialFilter ? " [View Filtered]" : "";
     setSqlFeedback("success", `Query completed in ${data.execution_time_ms} ms${cacheMsg} (${data.total.toLocaleString()} rows found)${filterMsg}`);
 
-    // Update Sky Map coordinates with returned sky_targets (clearing if 0 rows matched)
-    if (data.sky_targets !== null && data.sky_targets !== undefined) {
+    // Update master SQL sky targets and allSkyTargets
+    if (data.master_sky_targets !== null && data.master_sky_targets !== undefined) {
+      state.masterSqlSkyTargets = data.master_sky_targets;
+    } else if (data.sky_targets !== null && data.sky_targets !== undefined && !state.spatialFilter) {
       state.masterSqlSkyTargets = data.sky_targets;
-      state.allSkyTargets = data.sky_targets;
     }
-    renderSkyMap(state.targets);
+
+    if (data.sky_targets !== null && data.sky_targets !== undefined) {
+      state.allSkyTargets = data.sky_targets;
+    } else if (state.masterSqlSkyTargets) {
+      state.allSkyTargets = state.spatialFilter
+        ? state.masterSqlSkyTargets.filter((t) => isTargetInSpatialFilter(t, state.spatialFilter))
+        : state.masterSqlSkyTargets;
+    }
 
     updateTableHeaders();
     renderTargetsTable(data.targets);
@@ -857,6 +867,7 @@ async function runSqlQuery(page = 1, skipSky = false, forceRefresh = false) {
 function clearSqlQueryFilter() {
   state.activeSqlQuery = "";
   state.masterSqlSkyTargets = null;
+  state.allSkyTargets = null;
   state.sqlColumns = [];
   state.sqlCustomColumns = [];
   state.sqlSortBy = null;
@@ -1333,6 +1344,7 @@ function initEventListeners() {
 
   if (elements.runSqlQueryBtn) {
     elements.runSqlQueryBtn.addEventListener("click", () => {
+      state.activeSqlQuery = elements.sqlQueryInput.value.trim();
       state.page = 1;
       state.sqlSortBy = null;
       state.sqlOrder = "asc";
@@ -1387,6 +1399,7 @@ function initEventListeners() {
       // Ctrl + Enter or Cmd + Enter to run SQL query
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
         e.preventDefault();
+        state.activeSqlQuery = elements.sqlQueryInput.value.trim();
         state.page = 1;
         state.sqlSortBy = null;
         state.sqlOrder = "asc";
@@ -2138,7 +2151,16 @@ function renderTargetsTable(targets) {
 
   elements.targetsTbody.innerHTML = rowsHtml;
   if (state.skyScope === "all" && !state.allSkyTargets && !state.allSkyLoading) {
-    fetchAllSkyPositions();
+    if (state.filterMode === "sql") {
+      state.allSkyTargets = state.masterSqlSkyTargets
+        ? (state.spatialFilter
+            ? state.masterSqlSkyTargets.filter((t) => isTargetInSpatialFilter(t, state.spatialFilter))
+            : state.masterSqlSkyTargets)
+        : [];
+      renderSkyMap(targets);
+    } else {
+      fetchAllSkyPositions();
+    }
   } else {
     renderSkyMap(targets);
   }
@@ -2234,7 +2256,7 @@ function filterMasterSkyTargets() {
 }
 
 function updatePlottedSkyTargets() {
-  if (state.filterMode === "sql" && state.activeSqlQuery) {
+  if (state.filterMode === "sql") {
     if (state.masterSqlSkyTargets) {
       state.allSkyTargets = state.spatialFilter
         ? state.masterSqlSkyTargets.filter((t) => isTargetInSpatialFilter(t, state.spatialFilter))
@@ -2786,7 +2808,15 @@ function renderSkyMap(pageTargets) {
 
   // If "all" mode is selected but data not loaded yet, check master cache or fetch it
   if (isAll && !state.allSkyTargets) {
-    if (state.masterSkyTargets) {
+    if (state.filterMode === "sql") {
+      if (state.masterSqlSkyTargets) {
+        state.allSkyTargets = state.spatialFilter
+          ? state.masterSqlSkyTargets.filter((t) => isTargetInSpatialFilter(t, state.spatialFilter))
+          : state.masterSqlSkyTargets;
+      } else {
+        state.allSkyTargets = [];
+      }
+    } else if (state.masterSkyTargets) {
       state.allSkyTargets = filterMasterSkyTargets();
     } else {
       if (!state.allSkyLoading) {

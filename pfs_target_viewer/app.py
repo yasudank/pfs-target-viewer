@@ -1599,6 +1599,10 @@ class SqlQueryRequest(BaseModel):
     order: Optional[str] = "asc"
     skip_sky: Optional[bool] = False
     force_refresh: Optional[bool] = False
+    min_ra: Optional[float] = None
+    max_ra: Optional[float] = None
+    min_dec: Optional[float] = None
+    max_dec: Optional[float] = None
 
     def get_sql(self) -> str:
         val = self.sql or self.query or ""
@@ -1677,6 +1681,49 @@ def sort_cached_rows(rows: List[dict], sort_by: Optional[str], order: Optional[s
 
     valid.sort(key=val_key, reverse=is_desc)
     return valid + nulls
+
+
+def filter_rows_spatially(
+    rows: List[dict],
+    min_ra: Optional[float],
+    max_ra: Optional[float],
+    min_dec: Optional[float],
+    max_dec: Optional[float],
+) -> List[dict]:
+    """Filter list of target dictionaries by spatial bounding box (RA / Dec)."""
+    if min_ra is None and max_ra is None and min_dec is None and max_dec is None:
+        return rows
+
+    filtered = []
+    for r in rows:
+        ra = r.get("ra")
+        dec = r.get("dec")
+        if ra is None or dec is None:
+            continue
+        try:
+            ra_f = float(ra)
+            dec_f = float(dec)
+        except (ValueError, TypeError):
+            continue
+
+        if min_dec is not None and dec_f < min_dec:
+            continue
+        if max_dec is not None and dec_f > max_dec:
+            continue
+        if min_ra is not None and max_ra is not None:
+            if min_ra <= max_ra:
+                if ra_f < min_ra or ra_f > max_ra:
+                    continue
+            else:
+                # Wraps around RA 0 deg (e.g. 350 to 20)
+                if ra_f < min_ra and ra_f > max_ra:
+                    continue
+        elif min_ra is not None and ra_f < min_ra:
+            continue
+        elif max_ra is not None and ra_f > max_ra:
+            continue
+        filtered.append(r)
+    return filtered
 
 
 def has_top_level_limit(sql: str) -> bool:
@@ -2313,19 +2360,20 @@ def execute_sql_query(req: SqlQueryRequest):
         cached = SQL_CACHE.get(cache_key_source)
         if cached:
             all_rows = cached["all_rows"]
-            total = cached["total"]
+            effective_rows = filter_rows_spatially(all_rows, req.min_ra, req.max_ra, req.min_dec, req.max_dec)
+            total = len(effective_rows)
             pages = max(1, math.ceil(total / limit)) if total > 0 else 1
 
             # When top-level LIMIT is present, keep exact database-returned order.
             # Otherwise, sort full dataset in memory.
             if has_limit:
-                sorted_rows = all_rows
+                sorted_rows = effective_rows
             else:
-                sorted_rows = sort_cached_rows(all_rows, effective_sort_by, effective_order)
+                sorted_rows = sort_cached_rows(effective_rows, effective_sort_by, effective_order)
             page_rows = sorted_rows[offset : offset + limit]
 
             # Send sky targets only if requested (skip on page flip / sort to save bandwidth)
-            sky_targets = None if req.skip_sky else cached.get("sky_targets", [])
+            sky_targets = None if req.skip_sky else filter_rows_spatially(cached.get("sky_targets", []), req.min_ra, req.max_ra, req.min_dec, req.max_dec)
             duration_ms = round((time.time() - t_start) * 1000.0, 1)
 
             return {
@@ -2417,26 +2465,31 @@ def execute_sql_query(req: SqlQueryRequest):
 
         # When top-level LIMIT is present, keep exact database-returned order.
         # Otherwise, sort full dataset in memory.
+        effective_rows = filter_rows_spatially(all_clean_rows, req.min_ra, req.max_ra, req.min_dec, req.max_dec)
+        eff_total = len(effective_rows)
+        eff_pages = max(1, math.ceil(eff_total / limit)) if eff_total > 0 else 1
+
         if has_limit:
-            sorted_rows = all_clean_rows
+            sorted_rows = effective_rows
         else:
-            sorted_rows = sort_cached_rows(all_clean_rows, effective_sort_by, effective_order)
+            sorted_rows = sort_cached_rows(effective_rows, effective_sort_by, effective_order)
         page_rows = sorted_rows[offset : offset + limit]
 
+        effective_sky = None if req.skip_sky else filter_rows_spatially(sky_targets, req.min_ra, req.max_ra, req.min_dec, req.max_dec)
         duration_ms = round((time.time() - t_start) * 1000.0, 1)
 
         return {
-            "total": total,
+            "total": eff_total,
             "page": page,
             "limit": limit,
-            "pages": pages,
+            "pages": eff_pages,
             "duration_ms": duration_ms,
             "execution_time_ms": duration_ms,
             "has_identity": has_identity,
             "user_columns": user_cols,
             "columns": user_cols,
             "targets": page_rows,
-            "sky_targets": None if req.skip_sky else sky_targets,
+            "sky_targets": effective_sky,
             "cached": False,
         }
     finally:

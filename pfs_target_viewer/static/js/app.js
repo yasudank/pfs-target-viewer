@@ -111,6 +111,7 @@ const state = {
   sqlColumns: [],     // Returned column names from SQL query
   sqlCustomColumns: [], // Columns beyond the standard schema
   sqlLoading: false,
+  masterSqlSkyTargets: null, // Full-sky targets returned by current SQL query before view filter
   schemaData: null,   // Cached database schema from /api/sql/schema
   schemaExpandedTables: new Set(["target_summary"]), // Default expanded tables
 
@@ -760,18 +761,35 @@ async function runSqlQuery(page = 1, skipSky = false, forceRefresh = false) {
   setSqlFeedback("running", "Executing SQL query...");
 
   try {
+    const payload = {
+      query: query,
+      page: page,
+      limit: state.limit,
+      sort_by: state.sqlSortBy,
+      order: state.sqlOrder,
+      skip_sky: skipSky,
+      force_refresh: forceRefresh,
+    };
+
+    if (state.spatialFilter) {
+      if (state.spatialFilter.min_ra !== null && state.spatialFilter.min_ra !== undefined) {
+        payload.min_ra = state.spatialFilter.min_ra;
+      }
+      if (state.spatialFilter.max_ra !== null && state.spatialFilter.max_ra !== undefined) {
+        payload.max_ra = state.spatialFilter.max_ra;
+      }
+      if (state.spatialFilter.min_dec !== null && state.spatialFilter.min_dec !== undefined) {
+        payload.min_dec = state.spatialFilter.min_dec;
+      }
+      if (state.spatialFilter.max_dec !== null && state.spatialFilter.max_dec !== undefined) {
+        payload.max_dec = state.spatialFilter.max_dec;
+      }
+    }
+
     const res = await fetch("/api/sql/query", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query: query,
-        page: page,
-        limit: state.limit,
-        sort_by: state.sqlSortBy,
-        order: state.sqlOrder,
-        skip_sky: skipSky,
-        force_refresh: forceRefresh,
-      }),
+      body: JSON.stringify(payload),
     });
 
     const data = await res.json();
@@ -802,15 +820,18 @@ async function runSqlQuery(page = 1, skipSky = false, forceRefresh = false) {
       elements.sqlFilterBadge.style.display = "inline-flex";
       if (elements.sqlFilterText) {
         const cacheTag = data.cached ? " ⚡cached" : "";
-        elements.sqlFilterText.textContent = `SQL: ${data.total.toLocaleString()} targets (${data.execution_time_ms} ms${cacheTag})`;
+        const viewTag = state.spatialFilter ? " (view filtered)" : "";
+        elements.sqlFilterText.textContent = `SQL: ${data.total.toLocaleString()} targets (${data.execution_time_ms} ms${cacheTag})${viewTag}`;
       }
     }
 
     const cacheMsg = data.cached ? " (⚡ cached from server memory)" : "";
-    setSqlFeedback("success", `Query completed in ${data.execution_time_ms} ms${cacheMsg} (${data.total.toLocaleString()} rows found)`);
+    const filterMsg = state.spatialFilter ? " [View Filtered]" : "";
+    setSqlFeedback("success", `Query completed in ${data.execution_time_ms} ms${cacheMsg} (${data.total.toLocaleString()} rows found)${filterMsg}`);
 
     // Update Sky Map coordinates with returned sky_targets (clearing if 0 rows matched)
     if (data.sky_targets !== null && data.sky_targets !== undefined) {
+      state.masterSqlSkyTargets = data.sky_targets;
       state.allSkyTargets = data.sky_targets;
     }
     renderSkyMap(state.targets);
@@ -835,6 +856,7 @@ async function runSqlQuery(page = 1, skipSky = false, forceRefresh = false) {
 
 function clearSqlQueryFilter() {
   state.activeSqlQuery = "";
+  state.masterSqlSkyTargets = null;
   state.sqlColumns = [];
   state.sqlCustomColumns = [];
   state.sqlSortBy = null;
@@ -2213,6 +2235,11 @@ function filterMasterSkyTargets() {
 
 function updatePlottedSkyTargets() {
   if (state.filterMode === "sql" && state.activeSqlQuery) {
+    if (state.masterSqlSkyTargets) {
+      state.allSkyTargets = state.spatialFilter
+        ? state.masterSqlSkyTargets.filter((t) => isTargetInSpatialFilter(t, state.spatialFilter))
+        : state.masterSqlSkyTargets;
+    }
     if (state.skyScope === "all") {
       renderSkyMap(state.targets);
     }
@@ -2514,15 +2541,24 @@ function applySpatialFilter(bounds) {
   updateSpatialFilterUI();
   state.page = 1;
   updatePlottedSkyTargets();
-  fetchTargets();
+  if (state.filterMode === "sql" && state.activeSqlQuery) {
+    runSqlQuery(1, true, false);
+  } else {
+    fetchTargets();
+  }
 }
 
 function clearSpatialFilter() {
   state.spatialFilter = null;
+  state.skySavedViewRange = null;
   updateSpatialFilterUI();
   state.page = 1;
   updatePlottedSkyTargets();
-  fetchTargets();
+  if (state.filterMode === "sql" && state.activeSqlQuery) {
+    runSqlQuery(1, true, false);
+  } else {
+    fetchTargets();
+  }
 }
 
 function degToRaHours(deg) {

@@ -3064,18 +3064,9 @@ function renderSkyMap(pageTargets) {
         const custom = pt.customdata;
         if (custom) {
           const [catId, objId, obCode] = custom;
-          highlightTableRow(catId, objId);
+          highlightTableRow(catId, objId, null, true);
           // Show PNG quick-look modal first, as requested
           openImagePreview(catId, objId, obCode);
-        }
-      }
-    });
-
-    elements.skyPlotly.on("plotly_hover", (data) => {
-      if (data.points && data.points.length > 0) {
-        const custom = data.points[0].customdata;
-        if (custom) {
-          highlightTableRow(custom[0], custom[1], false);
         }
       }
     });

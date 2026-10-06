@@ -2575,6 +2575,18 @@ function degToRaHours(deg) {
   return `${h}h ${m}m ${s}s`;
 }
 
+function degToDecDms(deg) {
+  if (deg === null || deg === undefined || isNaN(deg)) return "";
+  const sign = deg < 0 ? "-" : "+";
+  const abs = Math.abs(deg);
+  const d = Math.floor(abs);
+  const totalMin = (abs - d) * 60;
+  const m = Math.floor(totalMin);
+  const s = ((totalMin - m) * 60).toFixed(1);
+  const sFormatted = parseFloat(s) < 10 ? `0${s}` : s;
+  return `${sign}${d}° ${String(m).padStart(2, "0")}' ${sFormatted}"`;
+}
+
 function formatRaDegrees(deg) {
   const norm = ((deg % 360) + 360) % 360;
   const totalHours = norm / 15;
@@ -2900,17 +2912,18 @@ function renderSkyMap(pageTargets) {
 
     let zText = "";
     if (cls === "STAR" && typeof t.bestVelocity === "number") {
-      zText = `Velocity: ${t.bestVelocity.toFixed(1)} km/s`;
+      zText = `Velocity: ${t.bestVelocity.toFixed(1)} km/s<br>`;
     } else if (typeof t.bestRedshift === "number") {
-      zText = `Redshift: z = ${t.bestRedshift.toFixed(4)}`;
+      zText = `Redshift: z = ${t.bestRedshift.toFixed(4)}<br>`;
     }
 
     const pt = projectMollweide(t.ra, t.dec, state.skyCentralRa);
     const raH = degToRaHours(t.ra);
+    const decDms = degToDecDms(t.dec);
 
     grp.x.push(pt.x);
     grp.y.push(pt.y);
-    grp.customdata.push([t.catId, t.objId, t.obCode || "Target", cls, zText, t.ra, t.dec, raH]);
+    grp.customdata.push([t.catId, t.objId, t.obCode || "Target", cls, zText, t.ra, t.dec, raH, decDms]);
   });
 
   // Base graticules and boundary
@@ -2944,12 +2957,18 @@ function renderSkyMap(pageTargets) {
           opacity: isAll ? 0.75 : 0.9,
           line: isAll ? undefined : { color: "#0f172a", width: 1.5 },
         },
+        hoverlabel: {
+          bgcolor: "#0f172a",
+          bordercolor: g.color,
+          font: { color: "#f8fafc", family: "Inter, sans-serif", size: 12 },
+        },
         hovertemplate:
           "<b>%{customdata[2]}</b> (objId: %{customdata[1]})<br>" +
-          "catId: %{customdata[0]} &bull; %{customdata[3]}<br>" +
-          "RA: %{customdata[5]:.4f}&deg; (%{customdata[7]}) | Dec: %{customdata[6]:.4f}&deg;<br>" +
-          "%{customdata[4]}<br>" +
-          "<span style='color:#38bdf8;font-size:11px;'>👆 Click marker to preview spectrum</span>" +
+          "catId: %{customdata[0]} • %{customdata[3]}<br>" +
+          "RA: %{customdata[5]:.4f}&deg; (%{customdata[7]})<br>" +
+          "Dec: %{customdata[6]:.4f}&deg; (%{customdata[8]})<br>" +
+          "%{customdata[4]}" +
+          "<span style='display:inline-block;padding:2px 6px;margin-top:3px;background:#0f172a;color:#38bdf8;border:1px solid #38bdf8;border-radius:4px;font-size:11px;'>👆 Click marker to preview spectrum</span>" +
           "<extra></extra>",
       });
     }
@@ -2978,6 +2997,7 @@ function renderSkyMap(pageTargets) {
           t.ra,
           t.dec,
           degToRaHours(t.ra),
+          degToDecDms(t.dec),
         ]),
         marker: {
           color: "rgba(255, 255, 255, 0.2)",
@@ -2985,11 +3005,17 @@ function renderSkyMap(pageTargets) {
           size: 14,
           line: { color: "#ffffff", width: 2.2 },
         },
+        hoverlabel: {
+          bgcolor: "#0f172a",
+          bordercolor: "#ffffff",
+          font: { color: "#f8fafc", family: "Inter, sans-serif", size: 12 },
+        },
         hovertemplate:
           "<b>Page " + state.page + " Focus</b>: %{customdata[2]} (objId: %{customdata[1]})<br>" +
-          "catId: %{customdata[0]} &bull; %{customdata[3]}<br>" +
-          "RA: %{customdata[5]:.4f}&deg; (%{customdata[7]}) | Dec: %{customdata[6]:.4f}&deg;<br>" +
-          "<span style='color:#38bdf8;font-size:11px;'>👆 Click marker to preview spectrum</span>" +
+          "catId: %{customdata[0]} • %{customdata[3]}<br>" +
+          "RA: %{customdata[5]:.4f}&deg; (%{customdata[7]})<br>" +
+          "Dec: %{customdata[6]:.4f}&deg; (%{customdata[8]})<br>" +
+          "<span style='display:inline-block;padding:2px 6px;margin-top:3px;background:#0f172a;color:#38bdf8;border:1px solid #38bdf8;border-radius:4px;font-size:11px;'>👆 Click marker to preview spectrum</span>" +
           "<extra></extra>",
       });
     }
@@ -3001,6 +3027,11 @@ function renderSkyMap(pageTargets) {
     plot_bgcolor: "#0b1120",
     margin: { l: 15, r: 15, t: 25, b: 15 },
     hovermode: "closest",
+    hoverlabel: {
+      bgcolor: "#0f172a",
+      bordercolor: "#38bdf8",
+      font: { color: "#f8fafc", family: "Inter, sans-serif", size: 12 },
+    },
     dragmode: "pan",
     showlegend: true,
     legend: {

@@ -831,20 +831,13 @@ async function runSqlQuery(page = 1, skipSky = false, forceRefresh = false) {
     const filterMsg = state.spatialFilter ? " [View Filtered]" : "";
     setSqlFeedback("success", `Query completed in ${data.execution_time_ms} ms${cacheMsg} (${data.total.toLocaleString()} rows found)${filterMsg}`);
 
-    // Update master SQL sky targets and allSkyTargets
+    // Update master SQL sky targets and allSkyTargets (keep all SQL targets plotted on sky map)
     if (data.master_sky_targets !== null && data.master_sky_targets !== undefined) {
       state.masterSqlSkyTargets = data.master_sky_targets;
     } else if (data.sky_targets !== null && data.sky_targets !== undefined && !state.spatialFilter) {
       state.masterSqlSkyTargets = data.sky_targets;
     }
-
-    if (data.sky_targets !== null && data.sky_targets !== undefined) {
-      state.allSkyTargets = data.sky_targets;
-    } else if (state.masterSqlSkyTargets) {
-      state.allSkyTargets = state.spatialFilter
-        ? state.masterSqlSkyTargets.filter((t) => isTargetInSpatialFilter(t, state.spatialFilter))
-        : state.masterSqlSkyTargets;
-    }
+    state.allSkyTargets = state.masterSqlSkyTargets || data.sky_targets || [];
 
     updateTableHeaders();
     renderTargetsTable(data.targets);
@@ -2152,11 +2145,7 @@ function renderTargetsTable(targets) {
   elements.targetsTbody.innerHTML = rowsHtml;
   if (state.skyScope === "all" && !state.allSkyTargets && !state.allSkyLoading) {
     if (state.filterMode === "sql") {
-      state.allSkyTargets = state.masterSqlSkyTargets
-        ? (state.spatialFilter
-            ? state.masterSqlSkyTargets.filter((t) => isTargetInSpatialFilter(t, state.spatialFilter))
-            : state.masterSqlSkyTargets)
-        : [];
+      state.allSkyTargets = state.masterSqlSkyTargets || [];
       renderSkyMap(targets);
     } else {
       fetchAllSkyPositions();
@@ -2247,10 +2236,6 @@ function filterMasterSkyTargets() {
         if (!t.obCode || !t.obCode.toLowerCase().includes(q)) return false;
       }
     }
-    // 6. Spatial boundary filter (RA / Dec)
-    if (sf) {
-      if (!isTargetInSpatialFilter(t, sf)) return false;
-    }
     return true;
   });
 }
@@ -2258,9 +2243,7 @@ function filterMasterSkyTargets() {
 function updatePlottedSkyTargets() {
   if (state.filterMode === "sql") {
     if (state.masterSqlSkyTargets) {
-      state.allSkyTargets = state.spatialFilter
-        ? state.masterSqlSkyTargets.filter((t) => isTargetInSpatialFilter(t, state.spatialFilter))
-        : state.masterSqlSkyTargets;
+      state.allSkyTargets = state.masterSqlSkyTargets;
     }
     if (state.skyScope === "all") {
       renderSkyMap(state.targets);
@@ -2809,13 +2792,7 @@ function renderSkyMap(pageTargets) {
   // If "all" mode is selected but data not loaded yet, check master cache or fetch it
   if (isAll && !state.allSkyTargets) {
     if (state.filterMode === "sql") {
-      if (state.masterSqlSkyTargets) {
-        state.allSkyTargets = state.spatialFilter
-          ? state.masterSqlSkyTargets.filter((t) => isTargetInSpatialFilter(t, state.spatialFilter))
-          : state.masterSqlSkyTargets;
-      } else {
-        state.allSkyTargets = [];
-      }
+      state.allSkyTargets = state.masterSqlSkyTargets || [];
     } else if (state.masterSkyTargets) {
       state.allSkyTargets = filterMasterSkyTargets();
     } else {
@@ -2863,7 +2840,14 @@ function renderSkyMap(pageTargets) {
            t.dec !== null && t.dec !== undefined && !isNaN(t.dec)
   );
 
-  const scopeLabel = isAll ? "All Filtered" : `Page ${state.page}`;
+  let scopeLabel;
+  if (!isAll) {
+    scopeLabel = `Page ${state.page}`;
+  } else if (state.spatialFilter) {
+    scopeLabel = `${state.total.toLocaleString()} in view filter`;
+  } else {
+    scopeLabel = state.filterMode === "sql" ? "All SQL" : "All";
+  }
   elements.skyMapCount.textContent = `${validTargets.length.toLocaleString()} targets plotted (${scopeLabel})`;
 
   if (validTargets.length === 0) {
@@ -2953,7 +2937,15 @@ function renderSkyMap(pageTargets) {
     }
   });
 
-  // If in "All Filtered" mode, add an overlay trace for current page targets
+  // If a spatial view filter is active, draw the bounding box region first (underneath highlights)
+  if (state.spatialFilter) {
+    const boxTrace = getSpatialFilterBoxTrace(state.spatialFilter, state.skyCentralRa);
+    if (boxTrace) {
+      traces.push(boxTrace);
+    }
+  }
+
+  // If in "All" mode, add an overlay trace for current page targets (white circle rings)
   if (isAll && pageTargets && pageTargets.length > 0) {
     const pageValid = pageTargets.filter(
       (t) => t.ra !== null && t.ra !== undefined && !isNaN(t.ra) &&
@@ -2978,10 +2970,10 @@ function renderSkyMap(pageTargets) {
           degToRaHours(t.ra),
         ]),
         marker: {
-          color: "rgba(255, 255, 255, 0.15)",
+          color: "rgba(255, 255, 255, 0.2)",
           symbol: "circle",
-          size: 13,
-          line: { color: "#ffffff", width: 2 },
+          size: 14,
+          line: { color: "#ffffff", width: 2.2 },
         },
         hovertemplate:
           "<b>Page " + state.page + " Focus</b>: %{customdata[2]} (objId: %{customdata[1]})<br>" +
@@ -2990,14 +2982,6 @@ function renderSkyMap(pageTargets) {
           "<span style='color:#38bdf8;font-size:11px;'>👆 Click marker to preview spectrum</span>" +
           "<extra></extra>",
       });
-    }
-  }
-
-  // If a spatial view filter is active, draw the bounding box region
-  if (state.spatialFilter) {
-    const boxTrace = getSpatialFilterBoxTrace(state.spatialFilter, state.skyCentralRa);
-    if (boxTrace) {
-      traces.push(boxTrace);
     }
   }
 

@@ -257,6 +257,42 @@ CREATE INDEX IF NOT EXISTS idx_ts_has_fits ON target_summary (has_fits);
 CREATE INDEX IF NOT EXISTS idx_ts_has_png ON target_summary (has_png);
 
 CREATE VIEW IF NOT EXISTS v_target_summary AS SELECT * FROM target_summary;
+
+CREATE TABLE IF NOT EXISTS survey_predictions (
+    catId INTEGER NOT NULL,
+    objId INTEGER NOT NULL,
+    combination TEXT NOT NULL,
+    pred_class TEXT,
+    prob_star REAL,
+    prob_galaxy REAL,
+    prob_qso REAL,
+    pred_confidence REAL,
+    pred_redshift REAL,
+    redshift_quality REAL,
+    z_galaxy_candidate REAL,
+    z_qso_candidate REAL,
+    PRIMARY KEY (catId, objId, combination)
+);
+CREATE INDEX IF NOT EXISTS idx_survey_predictions_catid_objid ON survey_predictions(catId, objId);
+CREATE INDEX IF NOT EXISTS idx_survey_predictions_pred_class ON survey_predictions(pred_class);
+CREATE INDEX IF NOT EXISTS idx_survey_predictions_pred_redshift ON survey_predictions(pred_redshift);
+CREATE INDEX IF NOT EXISTS idx_survey_predictions_confidence ON survey_predictions(pred_confidence);
+
+CREATE VIEW IF NOT EXISTS v_target_predictions AS
+SELECT 
+    ts.*,
+    sp.pred_class,
+    sp.prob_galaxy,
+    sp.prob_qso,
+    sp.prob_star,
+    sp.pred_confidence,
+    sp.pred_redshift,
+    sp.redshift_quality,
+    sp.z_galaxy_candidate,
+    sp.z_qso_candidate
+FROM target_summary ts
+LEFT JOIN survey_predictions sp
+  ON ts.catId = sp.catId AND ts.objId = sp.objId AND ts.combination = sp.combination;
 """
 
 
@@ -702,6 +738,9 @@ def main():
                          help="Do not (re-)populate the target/candidate tables")
     parser.add_argument("--skip-target-summary", action="store_true",
                          help="Do not (re-)populate the target_summary table")
+    parser.add_argument("--predictions-db", type=str,
+                         default="/mnt/ugnas/work/PFS/pfs_specClass2/results/pfs_full_survey_predictions.sqlite3",
+                         help="Path to pfs_specClass2 predictions SQLite DB to import (set empty to skip)")
     args = parser.parse_args()
 
     butler = Butler(args.repo, collections=args.collections)
@@ -717,6 +756,9 @@ def main():
         export_spectral_lines_cache(conn, args.db)
     if not args.skip_target_summary:
         populate_target_summary(conn)
+    if args.predictions_db and os.path.exists(args.predictions_db):
+        from import_ml_predictions import import_predictions
+        import_predictions(args.predictions_db, args.db)
 
     conn.close()
     print(f"Done. Database written to {args.db}")

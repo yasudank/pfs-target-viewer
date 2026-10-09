@@ -7,6 +7,8 @@ extracted_targets/
 .sky_positions_cache.json.gz
 .*_sky_cache.json.gz
 *.sky_cache.json.gz
+spectral_lines_catalog.json
+spectral_lines_cache.json
 
 # Python Virtual Environments
 .venv/

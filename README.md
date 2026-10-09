@@ -68,7 +68,8 @@ python run_pfs.py build_pfs_database.py
 
 - **Output**: `pfs_metadata.sqlite3`
 - **Primary Tables**:
-  - `v_target_summary`: Target representative parameters (redshift, classification probabilities, coordinates, obCode, etc.)
+  - `target_summary` / `v_target_summary`: Target representative parameters (redshift, classification probabilities, coordinates, obCode, etc.)
+  - `survey_predictions` / `v_target_predictions`: Machine learning survey predictions (`pfs_specClass2`) with predicted classes (GALAXY, QSO, STAR), probabilities, and ML redshifts
   - `solver_results`: Solver status, warning flags (`zWarning`), and error codes
   - `redshift_candidates`: Candidate model rankings, redshifts, $\chi^2$, and templates
   - `line_measurements`: Detected emission and absorption lines (wavelength, flux, EW, $\sigma$)

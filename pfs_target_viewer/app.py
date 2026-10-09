@@ -1163,6 +1163,20 @@ def get_target_details(catId: int, objId: str, combination: Optional[str] = Quer
             rd["objId"] = str(rd.get("objId", ""))
             line_rows.append(rd)
 
+        # Machine learning survey prediction (pfs_specClass2)
+        ml_prediction = None
+        try:
+            cur.execute(
+                f"SELECT * FROM survey_predictions WHERE catId = ? AND objId = ?{comb_filter_sql} LIMIT 1",
+                comb_params,
+            )
+            sp_row = cur.fetchone()
+            if sp_row:
+                ml_prediction = {k: sanitize_val(v) for k, v in dict(sp_row).items()}
+                ml_prediction["objId"] = str(ml_prediction.get("objId", ""))
+        except Exception:
+            pass
+
         fits_file, png_file = find_files(
             catId,
             obj_id_int,
@@ -1177,6 +1191,7 @@ def get_target_details(catId: int, objId: str, combination: Optional[str] = Quer
             "solver_results": solver_rows,
             "redshift_candidates": candidate_rows,
             "line_measurements": line_rows,
+            "ml_prediction": ml_prediction,
             "files": {
                 "fits": fits_file is not None,
                 "png": png_file is not None,
@@ -1916,11 +1931,22 @@ KNOWN_COLUMN_DESCRIPTIONS = {
     "cRank": "Candidate solution rank (1 = best candidate)",
     "redshift": "Candidate solution redshift",
     "redshiftProba": "Candidate probability",
+    "pred_class": "Machine learning predicted target classification (GALAXY, QSO, STAR)",
+    "prob_star": "ML posterior probability of being a Star [0-1]",
+    "prob_galaxy": "ML posterior probability of being a Galaxy [0-1]",
+    "prob_qso": "ML posterior probability of being a QSO [0-1]",
+    "pred_confidence": "ML classification confidence score [0-1]",
+    "pred_redshift": "ML predicted redshift for Galaxies and QSOs (0.0 for Stars)",
+    "redshift_quality": "ML redshift prediction quality / confidence metric",
+    "z_galaxy_candidate": "ML candidate redshift if evaluated as Galaxy",
+    "z_qso_candidate": "ML candidate redshift if evaluated as QSO",
 }
 
 KNOWN_TABLE_DESCRIPTIONS = {
     "target_summary": "High-performance materialized summary table with coordinates, classification, redshift, and spectrum files.",
     "v_target_summary": "View of target summary combining targets, classifications, and latest fiber coordinates.",
+    "survey_predictions": "Machine learning survey predictions (pfs_specClass2) with predicted classes, template probabilities, and ML redshifts.",
+    "v_target_predictions": "Convenience view combining target_summary with machine learning predictions (survey_predictions).",
     "targets": "Classification results, template probabilities, and best-fit redshifts per target.",
     "fiber_configs": "Per-visit fiber coordinates (ra, dec), PFI positions, and target configurations.",
     "visits": "Visit metadata, design ID, pointing boresight, and observation timestamps.",

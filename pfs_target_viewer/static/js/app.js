@@ -218,6 +218,7 @@ const elements = {
   candidatesTbody: document.getElementById("candidatesTbody"),
   linesTbody: document.getElementById("linesTbody"),
   solversTbody: document.getElementById("solversTbody"),
+  mlPredictionContent: document.getElementById("mlPredictionContent"),
   metaGrid: document.getElementById("metaGrid"),
 
   // HSC / Pan-STARRS Cutout in Details Modal
@@ -311,6 +312,57 @@ const elements = {
 // Custom SQL Query Templates & Engine
 // ----------------------------------------------------------------------------
 const SQL_TEMPLATES = {
+  ml_comparison: `-- Compare standard pipeline classification with Machine Learning predictions (pfs_specClass2)
+SELECT 
+  ts.catId, ts.objId, ts.combination, ts.ra, ts.dec,
+  ts.classificationName AS pipeline_class,
+  sp.pred_class AS ml_class,
+  ROUND(sp.pred_confidence, 3) AS ml_confidence,
+  ts.bestRedshift AS pipeline_z,
+  sp.pred_redshift AS ml_z,
+  ROUND(sp.prob_galaxy, 3) AS prob_galaxy,
+  ROUND(sp.prob_qso, 3) AS prob_qso,
+  ROUND(sp.prob_star, 3) AS prob_star
+FROM target_summary ts
+JOIN survey_predictions sp 
+  ON ts.catId = sp.catId AND ts.objId = sp.objId AND ts.combination = sp.combination
+LIMIT 100`,
+
+  ml_discrepancy: `-- Discrepancies between standard pipeline and ML classification
+-- Identifies targets where pipeline and ML models disagree on object nature
+SELECT 
+  ts.catId, ts.objId, ts.combination, ts.ra, ts.dec,
+  ts.classificationName AS pipeline_class,
+  sp.pred_class AS ml_class,
+  ROUND(sp.pred_confidence, 3) AS ml_confidence,
+  ts.bestRedshift AS pipeline_z,
+  sp.pred_redshift AS ml_z,
+  ROUND(sp.prob_galaxy, 3) AS prob_galaxy,
+  ROUND(sp.prob_qso, 3) AS prob_qso,
+  ROUND(sp.prob_star, 3) AS prob_star
+FROM target_summary ts
+JOIN survey_predictions sp 
+  ON ts.catId = sp.catId AND ts.objId = sp.objId AND ts.combination = sp.combination
+WHERE ts.classificationName != sp.pred_class 
+  AND sp.pred_confidence > 0.70
+ORDER BY sp.pred_confidence DESC
+LIMIT 100`,
+
+  ml_high_z_qso: `-- High-redshift Quasars predicted by ML (pred_class = 'QSO' and pred_redshift > 2.0)
+SELECT 
+  ts.catId, ts.objId, ts.combination, ts.ra, ts.dec,
+  ts.classificationName AS pipeline_class,
+  sp.pred_class AS ml_class,
+  sp.pred_redshift AS ml_z,
+  ROUND(sp.prob_qso, 4) AS prob_qso,
+  sp.redshift_quality
+FROM target_summary ts
+JOIN survey_predictions sp 
+  ON ts.catId = sp.catId AND ts.objId = sp.objId AND ts.combination = sp.combination
+WHERE sp.pred_class = 'QSO' AND sp.pred_redshift > 2.0
+ORDER BY sp.pred_redshift DESC
+LIMIT 100`,
+
   cone_search: `-- Cone Search within 60 arcseconds of RA: 150.0 deg, Dec: 2.0 deg
 -- Automatically uses (ra, dec) index bounding box + spherical Haversine distance
 SELECT *
@@ -3570,10 +3622,116 @@ window.openTargetDetails = async function (catId, objId, combination = null) {
       elements.solversTbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted">No solver flags recorded.</td></tr>`;
     }
 
-    // 4. Metadata Grid
+    // 4. ML Prediction (pfs_specClass2) Tab
+    if (elements.mlPredictionContent) {
+      const ml = data.ml_prediction;
+      if (ml) {
+        const mlClass = ml.pred_class || "UNKNOWN";
+        const mlConf = ml.pred_confidence !== null ? (ml.pred_confidence * 100).toFixed(1) + "%" : "-";
+        const mlZ = ml.pred_redshift !== null ? (mlClass === "STAR" ? "0.0 (Star)" : ml.pred_redshift.toFixed(4)) : "-";
+        const mlZQuality = ml.redshift_quality !== null ? ml.redshift_quality.toFixed(3) : "-";
+        const pGal = ml.prob_galaxy !== null ? (ml.prob_galaxy * 100).toFixed(1) : "0.0";
+        const pQso = ml.prob_qso !== null ? (ml.prob_qso * 100).toFixed(1) : "0.0";
+        const pStar = ml.prob_star !== null ? (ml.prob_star * 100).toFixed(1) : "0.0";
+        const zGal = ml.z_galaxy_candidate !== null ? ml.z_galaxy_candidate.toFixed(4) : "-";
+        const zQso = ml.z_qso_candidate !== null ? ml.z_qso_candidate.toFixed(4) : "-";
+
+        const pipeClass = data.target.classificationName || "UNKNOWN";
+        const isAgreement = (mlClass === pipeClass);
+        const agreementBadge = isAgreement 
+          ? `<span class="badge" style="background:#059669; color:#fff; font-size:0.8rem; padding:4px 8px;">✓ Match (${pipeClass})</span>` 
+          : `<span class="badge" style="background:#dc2626; color:#fff; font-size:0.8rem; padding:4px 8px;">⚠ Discrepancy (Pipeline: ${pipeClass} vs ML: ${mlClass})</span>`;
+
+        elements.mlPredictionContent.innerHTML = `
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 20px;">
+            <div style="background: var(--bg-card, #1e293b); border: 1px solid var(--border-color, #334155); border-radius: 8px; padding: 16px;">
+              <h5 style="margin-top:0; color: var(--accent-cyan, #38bdf8); font-size: 0.95rem;">🤖 Classification Summary</h5>
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                <span style="color: var(--text-muted, #94a3b8); font-size: 0.85rem;">Predicted Class:</span>
+                <span class="badge badge-${mlClass.toLowerCase()}" style="font-size: 0.95rem; font-weight: 600;">${mlClass}</span>
+              </div>
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                <span style="color: var(--text-muted, #94a3b8); font-size: 0.85rem;">Pipeline vs ML:</span>
+                ${agreementBadge}
+              </div>
+              <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span style="color: var(--text-muted, #94a3b8); font-size: 0.85rem;">Confidence Score:</span>
+                <span style="font-weight: 600; color: #f8fafc;">${mlConf}</span>
+              </div>
+            </div>
+
+            <div style="background: var(--bg-card, #1e293b); border: 1px solid var(--border-color, #334155); border-radius: 8px; padding: 16px;">
+              <h5 style="margin-top:0; color: var(--accent-cyan, #38bdf8); font-size: 0.95rem;">🌌 Redshift Prediction</h5>
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                <span style="color: var(--text-muted, #94a3b8); font-size: 0.85rem;">ML Redshift (z):</span>
+                <span style="font-size: 1.1rem; font-weight: 700; color: #38bdf8;">${mlZ}</span>
+              </div>
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                <span style="color: var(--text-muted, #94a3b8); font-size: 0.85rem;">Pipeline Best z:</span>
+                <span style="font-weight: 600; color: #f8fafc;">${data.target.bestRedshift !== null ? data.target.bestRedshift.toFixed(4) : "-"}</span>
+              </div>
+              <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span style="color: var(--text-muted, #94a3b8); font-size: 0.85rem;">Redshift Quality:</span>
+                <span style="color: #cbd5e1;">${mlZQuality}</span>
+              </div>
+            </div>
+          </div>
+
+          <div style="background: var(--bg-card, #1e293b); border: 1px solid var(--border-color, #334155); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+            <h5 style="margin-top:0; margin-bottom: 12px; color: var(--accent-cyan, #38bdf8); font-size: 0.95rem;">📊 Class Probability Distribution</h5>
+            <div style="margin-bottom: 10px;">
+              <div style="display:flex; justify-content:space-between; font-size:0.85rem; margin-bottom: 4px;">
+                <span>🌌 GALAXY</span><span style="font-weight:600;">${pGal}%</span>
+              </div>
+              <div style="background: #334155; border-radius: 4px; height: 8px; overflow: hidden;">
+                <div style="background: #38bdf8; height: 100%; width: ${pGal}%;"></div>
+              </div>
+            </div>
+            <div style="margin-bottom: 10px;">
+              <div style="display:flex; justify-content:space-between; font-size:0.85rem; margin-bottom: 4px;">
+                <span>✨ QSO / Quasar</span><span style="font-weight:600;">${pQso}%</span>
+              </div>
+              <div style="background: #334155; border-radius: 4px; height: 8px; overflow: hidden;">
+                <div style="background: #ec4899; height: 100%; width: ${pQso}%;"></div>
+              </div>
+            </div>
+            <div>
+              <div style="display:flex; justify-content:space-between; font-size:0.85rem; margin-bottom: 4px;">
+                <span>⭐ STAR</span><span style="font-weight:600;">${pStar}%</span>
+              </div>
+              <div style="background: #334155; border-radius: 4px; height: 8px; overflow: hidden;">
+                <div style="background: #eab308; height: 100%; width: ${pStar}%;"></div>
+              </div>
+            </div>
+          </div>
+
+          <div style="background: var(--bg-card, #1e293b); border: 1px solid var(--border-color, #334155); border-radius: 8px; padding: 16px;">
+            <h5 style="margin-top:0; color: var(--accent-cyan, #38bdf8); font-size: 0.95rem;">🔬 Candidate Redshift Solutions</h5>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 0.85rem;">
+              <div><span style="color: var(--text-muted, #94a3b8);">z (Galaxy Template):</span> <strong>${zGal}</strong></div>
+              <div><span style="color: var(--text-muted, #94a3b8);">z (QSO Template):</span> <strong>${zQso}</strong></div>
+            </div>
+          </div>
+        `;
+      } else {
+        elements.mlPredictionContent.innerHTML = `
+          <div style="padding: 24px; text-align: center; color: var(--text-muted, #94a3b8);">
+            <div style="font-size: 2rem; margin-bottom: 8px;">🤖</div>
+            <p>No machine learning prediction recorded in <code>survey_predictions</code> for this target.</p>
+          </div>
+        `;
+      }
+    }
+
+    // 5. Metadata Grid
     const t = data.target;
     const raFormatted = (typeof t.ra === "number" && !isNaN(t.ra)) ? t.ra.toFixed(6) : "-";
     const decFormatted = (typeof t.dec === "number" && !isNaN(t.dec)) ? t.dec.toFixed(6) : "-";
+    const mlMetaClass = data.ml_prediction ? data.ml_prediction.pred_class : "-";
+    const mlMetaZ = data.ml_prediction && data.ml_prediction.pred_redshift !== null 
+      ? (data.ml_prediction.pred_class === "STAR" ? "0.0 (Star)" : "z=" + data.ml_prediction.pred_redshift.toFixed(4)) 
+      : "-";
+
     elements.metaGrid.innerHTML = `
       <div class="meta-item"><div class="meta-label">Target ID</div><div class="meta-val">${t.objId}</div></div>
       <div class="meta-item"><div class="meta-label">obCode</div><div class="meta-val">${t.obCode || "-"}</div></div>
@@ -3583,6 +3741,8 @@ window.openTargetDetails = async function (catId, objId, combination = null) {
       <div class="meta-item"><div class="meta-label">Fiber Status</div><div class="meta-val">${t.fiberStatusName || "-"}</div></div>
       <div class="meta-item"><div class="meta-label">Classification</div><div class="meta-val">${t.classificationName || "-"}</div></div>
       <div class="meta-item"><div class="meta-label">Best Redshift / Velocity</div><div class="meta-val">${t.bestRedshift !== null ? "z=" + t.bestRedshift.toFixed(5) : t.bestVelocity !== null ? t.bestVelocity.toFixed(1) + " km/s" : "-"}</div></div>
+      <div class="meta-item"><div class="meta-label">ML Class (pfs_specClass2)</div><div class="meta-val">${mlMetaClass}</div></div>
+      <div class="meta-item"><div class="meta-label">ML Redshift</div><div class="meta-val">${mlMetaZ}</div></div>
       <div class="meta-item"><div class="meta-label">Has Solution</div><div class="meta-val">${t.hasSolution ? "Yes" : "No"}</div></div>
       <div class="meta-item"><div class="meta-label">FITS File</div><div class="meta-val">${data.files.fits_filename || "Not found"}</div></div>
       <div class="meta-item"><div class="meta-label">PNG Image</div><div class="meta-val">${data.files.png_filename || "Not found"}</div></div>

@@ -696,6 +696,20 @@ async def serve_dashboard(request: Request):
 _STATS_CACHE: Optional[Dict[str, Any]] = None
 
 
+def check_has_ml_predictions(conn: sqlite3.Connection) -> Tuple[bool, int]:
+    """Check if survey_predictions table exists and has rows."""
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='survey_predictions'")
+        if cur.fetchone()[0] == 0:
+            return False, 0
+        cur.execute("SELECT count(*) FROM survey_predictions")
+        cnt = cur.fetchone()[0]
+        return (cnt > 0), cnt
+    except Exception:
+        return False, 0
+
+
 @app.get("/api/stats")
 def get_stats(refresh: bool = Query(False, description="Force refresh statistics cache")):
     """Get repository overview statistics (cached in memory for instant response)."""
@@ -722,12 +736,16 @@ def get_stats(refresh: bool = Query(False, description="Force refresh statistics
         cur.execute(f"SELECT count(DISTINCT combination) FROM {tbl}")
         comb_count = cur.fetchone()[0]
 
+        has_ml, ml_count = check_has_ml_predictions(conn)
+
         result = {
             "total_targets": total,
             "classification_counts": class_counts,
             "catalogs_count": cat_count,
             "cat_ids": cat_counts,
             "combinations_count": comb_count,
+            "has_ml_predictions": has_ml,
+            "ml_predictions_count": ml_count,
             "db_path": DB_PATH,
             "data_dir": DATA_DIR,
             "table_used": tbl,
@@ -883,6 +901,10 @@ def get_targets(
         cur.execute(count_sql, params)
         total = cur.fetchone()[0]
 
+        has_ml, _ = check_has_ml_predictions(conn)
+        ml_select = "sp.pred_class, sp.pred_redshift, sp.pred_confidence," if has_ml else ""
+        ml_join = "LEFT JOIN survey_predictions sp ON t.catId = sp.catId AND t.objId = sp.objId AND t.combination = sp.combination" if has_ml else ""
+
         # Fetch page items
         offset = (page - 1) * limit
         file_select = "t.has_fits, t.fits_path, t.has_png, t.png_path," if has_file_cols else ""
@@ -895,8 +917,10 @@ def get_targets(
                 t.bestSubClass, t.hasSolution,
                 {extra_select}
                 {file_select}
+                {ml_select}
                 1 AS _dummy
             FROM {tbl} t
+            {ml_join}
             {where_sql}
             ORDER BY {sort_col} {sort_order} NULLS LAST, t.objId ASC
             LIMIT ? OFFSET ?
@@ -946,6 +970,10 @@ def get_targets(
             d["probaGalaxy"] = sanitize_val(d.get("probaGalaxy"))
             d["probaStar"] = sanitize_val(d.get("probaStar"))
             d["probaQSO"] = sanitize_val(d.get("probaQSO"))
+            if has_ml:
+                d["pred_class"] = d.get("pred_class")
+                d["pred_redshift"] = sanitize_val(d.get("pred_redshift"))
+                d["pred_confidence"] = sanitize_val(d.get("pred_confidence"))
             d.pop("_dummy", None)
             results.append(d)
 
@@ -956,6 +984,7 @@ def get_targets(
             "page": page,
             "limit": limit,
             "pages": pages,
+            "has_ml_predictions": has_ml,
             "targets": results,
         }
     finally:

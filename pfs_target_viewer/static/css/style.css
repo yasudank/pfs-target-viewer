@@ -2747,3 +2747,44 @@ th.col-hidden, td.col-hidden {
   color: #ffffff;
   box-shadow: 0 0 8px rgba(16, 185, 129, 0.35);
 }
+
+/* Machine Learning (pfs_specClass2) Elements */
+.stat-pill.stat-ml {
+  background: rgba(139, 92, 246, 0.15);
+  border-color: rgba(139, 92, 246, 0.35);
+}
+
+.stat-pill.stat-ml .stat-val {
+  color: #c084fc;
+  font-weight: 600;
+}
+
+.ml-sub-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-top: 4px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ml-sub-match {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.ml-sub-diff {
+  background: rgba(239, 68, 68, 0.18);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
+.ml-sub-z {
+  font-size: 0.72rem;
+  color: #c084fc;
+  font-family: var(--font-mono);
+  margin-top: 3px;
+}
+

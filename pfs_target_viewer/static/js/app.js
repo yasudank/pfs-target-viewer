@@ -100,6 +100,10 @@ const state = {
   allSkyLoading: false,
   targets: [],
 
+  // Machine Learning Availability State
+  hasMlPredictions: false,
+  showMlPredictions: false,
+
   // Image Preview Navigation
   imagePreviewList: null,
   imagePreviewIndex: 0,
@@ -139,6 +143,7 @@ const elements = {
 
   // SQL Query Controls
   sqlTemplateSelect: document.getElementById("sqlTemplateSelect"),
+  mlTemplateGroup: document.getElementById("mlTemplateGroup"),
   clearSqlBtn: document.getElementById("clearSqlBtn"),
   sqlQueryInput: document.getElementById("sqlQueryInput"),
   runSqlQueryBtn: document.getElementById("runSqlQueryBtn"),
@@ -172,6 +177,8 @@ const elements = {
   maxZInput: document.getElementById("maxZInput"),
   sortBySelect: document.getElementById("sortBySelect"),
   hasSpectraCheckbox: document.getElementById("hasSpectraCheckbox"),
+  mlToggleGroup: document.getElementById("mlToggleGroup"),
+  showMlCheckbox: document.getElementById("showMlCheckbox"),
   pageSizeSelect: document.getElementById("pageSizeSelect"),
   resetFiltersBtn: document.getElementById("resetFiltersBtn"),
 
@@ -194,6 +201,8 @@ const elements = {
   statGalaxy: document.getElementById("statGalaxy"),
   statQso: document.getElementById("statQso"),
   statStar: document.getElementById("statStar"),
+  statPillML: document.getElementById("statPillML"),
+  statML: document.getElementById("statML"),
 
   // Image Modal
   imageModal: document.getElementById("imageModal"),
@@ -218,6 +227,7 @@ const elements = {
   candidatesTbody: document.getElementById("candidatesTbody"),
   linesTbody: document.getElementById("linesTbody"),
   solversTbody: document.getElementById("solversTbody"),
+  tabMLBtn: document.getElementById("tabMLBtn"),
   mlPredictionContent: document.getElementById("mlPredictionContent"),
   metaGrid: document.getElementById("metaGrid"),
 
@@ -1571,6 +1581,16 @@ function initEventListeners() {
     });
   }
 
+  // Show ML Predictions Toggle
+  if (elements.showMlCheckbox) {
+    elements.showMlCheckbox.addEventListener("change", (e) => {
+      state.showMlPredictions = e.target.checked;
+      if (state.targets && state.targets.length > 0) {
+        renderTargetsTable(state.targets);
+      }
+    });
+  }
+
   // Reset Filters
   elements.resetFiltersBtn.addEventListener("click", () => {
     elements.searchInput.value = "";
@@ -1586,6 +1606,10 @@ function initEventListeners() {
       state.order = opt ? (opt.dataset.order || "asc") : "asc";
     }
     if (elements.hasSpectraCheckbox) elements.hasSpectraCheckbox.checked = false;
+    if (elements.showMlCheckbox) {
+      elements.showMlCheckbox.checked = false;
+      state.showMlPredictions = false;
+    }
 
     state.q = "";
     state.classification = "ALL";
@@ -1960,6 +1984,24 @@ async function loadStats() {
     elements.statQso.textContent = (data.classification_counts.QSO || 0).toLocaleString();
     elements.statStar.textContent = (data.classification_counts.STAR || 0).toLocaleString();
 
+    // Machine Learning (pfs_specClass2) display toggling
+    if (data.has_ml_predictions) {
+      state.hasMlPredictions = true;
+      if (elements.statPillML) {
+        elements.statPillML.style.display = "inline-flex";
+        if (elements.statML) elements.statML.textContent = (data.ml_predictions_count || 0).toLocaleString();
+      }
+      if (elements.mlToggleGroup) elements.mlToggleGroup.style.display = "";
+      if (elements.mlTemplateGroup) elements.mlTemplateGroup.style.display = "";
+    } else {
+      state.hasMlPredictions = false;
+      state.showMlPredictions = false;
+      if (elements.showMlCheckbox) elements.showMlCheckbox.checked = false;
+      if (elements.statPillML) elements.statPillML.style.display = "none";
+      if (elements.mlToggleGroup) elements.mlToggleGroup.style.display = "none";
+      if (elements.mlTemplateGroup) elements.mlTemplateGroup.style.display = "none";
+    }
+
     // Populate catId select options if available
     if (data.cat_ids && elements.catIdSelect) {
       const currentVal = elements.catIdSelect.value || "ALL";
@@ -2025,6 +2067,9 @@ async function fetchTargets() {
     state.total = data.total;
     state.pages = data.pages;
     state.targets = data.targets || [];
+    if (data.has_ml_predictions !== undefined) {
+      state.hasMlPredictions = Boolean(data.has_ml_predictions);
+    }
     state.sqlCustomColumns = []; // Reset custom columns in standard mode
     updateTableHeaders();
     renderTargetsTable(data.targets);
@@ -2156,6 +2201,25 @@ function renderTargetsTable(targets) {
       const redshiftHidden = state.hiddenColumns.has("redshift") ? "col-hidden" : "";
       const subclassHidden = state.hiddenColumns.has("subclass") ? "col-hidden" : "";
 
+      // Machine Learning Prediction Badges
+      let mlBadgeHtml = "";
+      let mlZHtml = "";
+      if (state.hasMlPredictions && state.showMlPredictions && t.pred_class) {
+        const isMatch = (t.pred_class === cls);
+        const confStr = typeof t.pred_confidence === "number" ? `${(t.pred_confidence * 100).toFixed(1)}%` : "";
+        const confTitle = confStr ? ` (Conf: ${confStr})` : "";
+        if (isMatch) {
+          mlBadgeHtml = `<div class="ml-sub-badge ml-sub-match" title="ML: ${t.pred_class}${confTitle} matches pipeline">✓ ML: ${t.pred_class}</div>`;
+        } else {
+          mlBadgeHtml = `<div class="ml-sub-badge ml-sub-diff" title="Discrepancy: Pipeline ${cls} vs ML ${t.pred_class}${confTitle}">⚠️ ML: ${t.pred_class}</div>`;
+        }
+
+        if (t.pred_redshift !== null && t.pred_redshift !== undefined) {
+          const mlZDisplay = t.pred_class === "STAR" ? "ML: star" : `ML z=${Number(t.pred_redshift).toFixed(4)}`;
+          mlZHtml = `<div class="ml-sub-z" title="ML Predicted Redshift">${mlZDisplay}</div>`;
+        }
+      }
+
       return `
       <tr data-catid="${t.catId}" data-objid="${t.objId}" data-combination="${t.combination || ''}">
         <td class="col-thumb ${thumbHidden}" data-col="thumb">${thumbHtml}</td>
@@ -2177,6 +2241,7 @@ function renderTargetsTable(targets) {
         </td>
         <td class="col-class ${classHidden}" data-col="class">
           <span class="badge ${badgeClass}">${cls}</span>
+          ${mlBadgeHtml}
           <div class="proba-bar" title="G: ${pGal} | Q: ${pQso} | S: ${pStar}">
             G:${pGal} Q:${pQso} S:${pStar}
           </div>
@@ -2184,6 +2249,7 @@ function renderTargetsTable(targets) {
         <td class="col-z ${redshiftHidden}" data-col="redshift">
           <div class="z-val">${zDisplay}</div>
           ${zErrDisplay ? `<div class="z-err">${zErrDisplay}</div>` : ""}
+          ${mlZHtml}
         </td>
         <td class="col-subclass ${subclassHidden}" data-col="subclass">
           <span class="subclass-text">${t.bestSubClass || "-"}</span>
@@ -2968,6 +3034,10 @@ function renderSkyMap(pageTargets) {
     } else if (typeof t.bestRedshift === "number") {
       zText = `Redshift: z = ${t.bestRedshift.toFixed(4)}<br>`;
     }
+    if (state.hasMlPredictions && state.showMlPredictions && t.pred_class) {
+      const mlZ = t.pred_redshift !== null && t.pred_redshift !== undefined ? ` (z=${Number(t.pred_redshift).toFixed(4)})` : "";
+      zText += `ML: ${t.pred_class}${mlZ}<br>`;
+    }
 
     const pt = projectMollweide(t.ra, t.dec, state.skyCentralRa);
     const raH = degToRaHours(t.ra);
@@ -3623,9 +3693,26 @@ window.openTargetDetails = async function (catId, objId, combination = null) {
     }
 
     // 4. ML Prediction (pfs_specClass2) Tab
+    const ml = data.ml_prediction;
+    const hasMlData = Boolean(ml && ml.pred_class);
+
+    if (elements.tabMLBtn) {
+      elements.tabMLBtn.style.display = hasMlData ? "inline-flex" : "none";
+      if (!hasMlData && elements.tabMLBtn.classList.contains("active")) {
+        // Fallback to first tab
+        document.querySelectorAll(".modal-tabs .tab-btn").forEach((b) => b.classList.remove("active"));
+        document.querySelectorAll(".tab-pane").forEach((p) => p.classList.remove("active"));
+        const firstTab = document.querySelector(".modal-tabs .tab-btn");
+        if (firstTab) {
+          firstTab.classList.add("active");
+          const pane = document.getElementById(firstTab.dataset.tab);
+          if (pane) pane.classList.add("active");
+        }
+      }
+    }
+
     if (elements.mlPredictionContent) {
-      const ml = data.ml_prediction;
-      if (ml) {
+      if (hasMlData) {
         const mlClass = ml.pred_class || "UNKNOWN";
         const mlConf = ml.pred_confidence !== null ? (ml.pred_confidence * 100).toFixed(1) + "%" : "-";
         const mlZ = ml.pred_redshift !== null ? (mlClass === "STAR" ? "0.0 (Star)" : ml.pred_redshift.toFixed(4)) : "-";
@@ -3727,10 +3814,15 @@ window.openTargetDetails = async function (catId, objId, combination = null) {
     const t = data.target;
     const raFormatted = (typeof t.ra === "number" && !isNaN(t.ra)) ? t.ra.toFixed(6) : "-";
     const decFormatted = (typeof t.dec === "number" && !isNaN(t.dec)) ? t.dec.toFixed(6) : "-";
-    const mlMetaClass = data.ml_prediction ? data.ml_prediction.pred_class : "-";
-    const mlMetaZ = data.ml_prediction && data.ml_prediction.pred_redshift !== null 
-      ? (data.ml_prediction.pred_class === "STAR" ? "0.0 (Star)" : "z=" + data.ml_prediction.pred_redshift.toFixed(4)) 
+    const mlMetaClass = ml ? (ml.pred_class || "-") : "-";
+    const mlMetaZ = ml && ml.pred_redshift !== null 
+      ? (ml.pred_class === "STAR" ? "0.0 (Star)" : "z=" + Number(ml.pred_redshift).toFixed(4)) 
       : "-";
+
+    const mlMetaRows = hasMlData ? `
+      <div class="meta-item"><div class="meta-label">ML Class (pfs_specClass2)</div><div class="meta-val">${mlMetaClass}</div></div>
+      <div class="meta-item"><div class="meta-label">ML Redshift</div><div class="meta-val">${mlMetaZ}</div></div>
+    ` : "";
 
     elements.metaGrid.innerHTML = `
       <div class="meta-item"><div class="meta-label">Target ID</div><div class="meta-val">${t.objId}</div></div>
@@ -3741,8 +3833,7 @@ window.openTargetDetails = async function (catId, objId, combination = null) {
       <div class="meta-item"><div class="meta-label">Fiber Status</div><div class="meta-val">${t.fiberStatusName || "-"}</div></div>
       <div class="meta-item"><div class="meta-label">Classification</div><div class="meta-val">${t.classificationName || "-"}</div></div>
       <div class="meta-item"><div class="meta-label">Best Redshift / Velocity</div><div class="meta-val">${t.bestRedshift !== null ? "z=" + t.bestRedshift.toFixed(5) : t.bestVelocity !== null ? t.bestVelocity.toFixed(1) + " km/s" : "-"}</div></div>
-      <div class="meta-item"><div class="meta-label">ML Class (pfs_specClass2)</div><div class="meta-val">${mlMetaClass}</div></div>
-      <div class="meta-item"><div class="meta-label">ML Redshift</div><div class="meta-val">${mlMetaZ}</div></div>
+      ${mlMetaRows}
       <div class="meta-item"><div class="meta-label">Has Solution</div><div class="meta-val">${t.hasSolution ? "Yes" : "No"}</div></div>
       <div class="meta-item"><div class="meta-label">FITS File</div><div class="meta-val">${data.files.fits_filename || "Not found"}</div></div>
       <div class="meta-item"><div class="meta-label">PNG Image</div><div class="meta-val">${data.files.png_filename || "Not found"}</div></div>

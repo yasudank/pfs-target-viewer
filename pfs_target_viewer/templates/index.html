@@ -38,6 +38,7 @@
         <div class="stat-pill stat-galaxy"><span class="stat-label">Galaxy:</span> <span class="stat-val" id="statGalaxy">-</span></div>
         <div class="stat-pill stat-qso"><span class="stat-label">QSO:</span> <span class="stat-val" id="statQso">-</span></div>
         <div class="stat-pill stat-star"><span class="stat-label">Star:</span> <span class="stat-val" id="statStar">-</span></div>
+        <div class="stat-pill stat-ml" id="statPillML" style="display: none;" title="Machine Learning survey predictions (pfs_specClass2)"><span class="stat-label">🤖 ML:</span> <span class="stat-val" id="statML">-</span></div>
       </div>
     </div>
   </header>
@@ -122,6 +123,14 @@
             </label>
           </div>
 
+          <!-- Machine Learning Predictions Toggle -->
+          <div class="filter-group" id="mlToggleGroup" style="display: none;">
+            <label class="spectra-toggle" title="Show ML predicted classification and redshift alongside pipeline results">
+              <input type="checkbox" id="showMlCheckbox">
+              <span>🤖 ML Preds</span>
+            </label>
+          </div>
+
           <!-- Reset Button -->
           <button id="resetFiltersBtn" class="btn btn-secondary" title="Reset all filters">
             <span>↺ Reset</span>
@@ -145,16 +154,20 @@
                   <label for="sqlTemplateSelect">Template:</label>
                   <select id="sqlTemplateSelect" class="custom-select select-sm">
                     <option value="">-- Choose Template --</option>
-                    <option value="ml_comparison">🤖 ML vs Pipeline Comparison (JOIN survey_predictions)</option>
-                    <option value="ml_discrepancy">⚔️ ML vs Pipeline Discrepancies</option>
-                    <option value="ml_high_z_qso">🚀 ML High-z QSOs (pred_class = 'QSO' &amp; z &gt; 2.0)</option>
-                    <option value="cone_search">🔭 Cone Search (within 60 arcsec)</option>
-                    <option value="cone_fov">🌐 PFS FoV Search (within 0.7 deg)</option>
-                    <option value="oii_emitters">✨ Measured Spectral Lines (Cone 0.2 deg Join)</option>
-                    <option value="high_z_qso">🌌 High-Redshift QSOs (z &gt; 3.0)</option>
-                    <option value="boundary_class">⚖️ Ambiguous Galaxy/Star Class (0.4 &le; P &le; 0.6)</option>
-                    <option value="solver_warnings">⚠️ Redshift Solver Warnings</option>
-                    <option value="spectra_only">📊 Science Targets with FITS Spectra</option>
+                    <optgroup label="🤖 Machine Learning (pfs_specClass2)" id="mlTemplateGroup" style="display: none;">
+                      <option value="ml_comparison">🤖 ML vs Pipeline Comparison (JOIN survey_predictions)</option>
+                      <option value="ml_discrepancy">⚔️ ML vs Pipeline Discrepancies</option>
+                      <option value="ml_high_z_qso">🚀 ML High-z QSOs (pred_class = 'QSO' &amp; z &gt; 2.0)</option>
+                    </optgroup>
+                    <optgroup label="Standard Query Templates" id="standardTemplateGroup">
+                      <option value="cone_search">🔭 Cone Search (within 60 arcsec)</option>
+                      <option value="cone_fov">🌐 PFS FoV Search (within 0.7 deg)</option>
+                      <option value="oii_emitters">✨ Measured Spectral Lines (Cone 0.2 deg Join)</option>
+                      <option value="high_z_qso">🌌 High-Redshift QSOs (z &gt; 3.0)</option>
+                      <option value="boundary_class">⚖️ Ambiguous Galaxy/Star Class (0.4 &le; P &le; 0.6)</option>
+                      <option value="solver_warnings">⚠️ Redshift Solver Warnings</option>
+                      <option value="spectra_only">📊 Science Targets with FITS Spectra</option>
+                    </optgroup>
                   </select>
                 </div>
                 <button type="button" id="openSpectralLinesBtn" class="btn btn-sm btn-outline-info" title="Browse all spectral lines in line_measurements">🔬 Spectral Lines</button>
@@ -547,7 +560,7 @@ ORDER BY bestRedshift DESC</textarea>
         <button class="tab-btn active" data-tab="tabCandidates">Redshift Candidates</button>
         <button class="tab-btn" data-tab="tabLines">Line Measurements</button>
         <button class="tab-btn" data-tab="tabSolvers">Solver Results</button>
-        <button class="tab-btn" data-tab="tabML">🤖 ML Prediction</button>
+        <button class="tab-btn" data-tab="tabML" id="tabMLBtn" style="display: none;">🤖 ML Prediction</button>
         <button class="tab-btn" data-tab="tabMeta">Target Metadata</button>
         <button class="tab-btn" data-tab="tabSky">🔭 Expanded Sky View</button>
       </div>
@@ -827,6 +840,6 @@ ORDER BY bestRedshift DESC</textarea>
   </div>
 
   <!-- Client-side script -->
-  <script src="/static/js/app.js?v=4.5"></script>
+  <script src="/static/js/app.js?v=4.6"></script>
 </body>
 </html>

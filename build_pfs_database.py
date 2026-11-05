@@ -29,6 +29,7 @@ Must be run inside the PFS pipeline environment, e.g.:
 import argparse
 import json
 import os
+import re
 import sqlite3
 
 import numpy as np
@@ -310,12 +311,17 @@ def _pyval(value):
 
 
 def _clean_ob_code(ob_code):
-    """Strip everything after the last underscore (inclusive) from obCode."""
+    """
+    Clean obCode by stripping trailing 7-8 char hex tile/commit hash (e.g. '_19b1fa4', '_62c2907')
+    while preserving target identifiers like '_0001', 'rubin_s26b_0001', etc.
+    """
     if ob_code is None:
         return None
-    s = str(ob_code)
+    s = str(ob_code).strip()
     if '_' in s:
-        return s[:s.rindex('_')]
+        prefix, suffix = s.rsplit('_', 1)
+        if re.match(r'^[0-9a-f]{7,8}$', suffix) and re.search(r'[a-f]', suffix):
+            return prefix
     return s
 
 
@@ -657,7 +663,7 @@ def populate_target_summary(conn):
         cur.execute("SELECT count(*) FROM fiber_configs")
         fc_cnt = cur.fetchone()[0]
         if fc_cnt > 0:
-            print(f"  Note: 'targets' table is empty. Populating target_summary from fiber_configs (QL / raw mode)...")
+            print(f"  Note: 'targets' table is empty. Populating target_summary from fiber_configs (QL mode)...")
             cur.execute("""
                 INSERT INTO target_summary (
                     catId, objId, combination, objGroup,
@@ -669,7 +675,7 @@ def populate_target_summary(conn):
                     has_fits, fits_path, has_png, png_path
                 )
                 SELECT 
-                    fc.catId, fc.objId, 'raw', 0,
+                    fc.catId, fc.objId, 'ql', 0,
                     fc.obCode, fc.targetTypeName, fc.fiberStatusName, fc.ra, fc.dec,
                     'UNKNOWN', NULL, NULL, NULL,
                     NULL, NULL, NULL, NULL,

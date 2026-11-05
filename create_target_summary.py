@@ -188,7 +188,7 @@ def main():
     """
     cur.execute(insert_sql)
     if targets_count == 0 and fc_count > 0:
-        print("    ℹ️  'targets' table is empty. Populating from fiber_configs (QL / raw mode)...", flush=True)
+        print("    ℹ️  'targets' table is empty. Populating from fiber_configs (QL mode)...", flush=True)
         cur.execute("""
             INSERT INTO target_summary (
                 catId, objId, combination, objGroup,
@@ -200,7 +200,7 @@ def main():
                 has_fits, fits_path, has_png, png_path
             )
             SELECT 
-                fc.catId, fc.objId, 'raw', 0,
+                fc.catId, fc.objId, 'ql', 0,
                 fc.obCode, fc.targetTypeName, fc.fiberStatusName, fc.ra, fc.dec,
                 'UNKNOWN', NULL, NULL, NULL,
                 NULL, NULL, NULL, NULL,

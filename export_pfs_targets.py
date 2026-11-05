@@ -13,6 +13,7 @@ Run via run_pfs.py in the PFS pipeline environment:
         --limit 5
 """
 import argparse
+from collections import OrderedDict
 import os
 import sqlite3
 import sys
@@ -24,6 +25,8 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
 from lsst.daf.butler import Butler
+from pfs.datamodel.drp import PfsObject
+from pfs.datamodel.observations import Observations
 
 # Speed of light in km/s for Doppler conversion of stellar radial velocity
 C_KMS = 299792.458
@@ -179,6 +182,75 @@ def plot_spectrum_with_lines(pfsObject, redshift, title=None, out_png=None,
     plt.close(fig)
 
 
+def combine_pfs_single_spectra(specs):
+    """
+    Combine multiple PfsSingle spectra for the same target into a unified PfsObject.
+    Uses inverse-variance weighting on valid (unmasked) pixels.
+    """
+    if len(specs) == 1:
+        return specs[0]
+
+    wave = specs[0].wavelength
+    fluxes = np.array([s.flux for s in specs])
+    variances = np.array([s.variance for s in specs])
+    masks = np.array([s.mask for s in specs])
+
+    bad_mask = specs[0].flags.get("BAD", "CR", "NO_DATA", "SAT")
+    good = (masks & bad_mask == 0) & np.isfinite(fluxes) & np.isfinite(variances) & (variances > 0)
+
+    weights = np.zeros_like(fluxes)
+    weights[good] = 1.0 / variances[good]
+    wsum = np.sum(weights, axis=0)
+
+    combined_flux = np.full_like(wave, np.nan)
+    combined_var = np.full_like(wave, np.nan)
+
+    valid = wsum > 0
+    combined_flux[valid] = np.sum(fluxes * weights, axis=0)[valid] / wsum[valid]
+    combined_var[valid] = 1.0 / wsum[valid]
+
+    combined_mask = np.bitwise_and.reduce(masks)
+    with np.errstate(all="ignore"):
+        combined_sky = np.nanmean([s.sky for s in specs], axis=0)
+        combined_sky = np.nan_to_num(combined_sky, nan=0.0)
+
+    covar_dtype = specs[0].covar.dtype if hasattr(specs[0], "covar") else np.float32
+    combined_covar = np.zeros((2, len(wave)), dtype=covar_dtype)
+    combined_covar[0] = combined_var
+
+    # Concatenate observations from all visits
+    obs_list = [s.observations for s in specs if getattr(s, "observations", None) is not None]
+    if obs_list:
+        visits = np.concatenate([o.visit for o in obs_list])
+        arms = sum([list(o.arm) for o in obs_list], [])
+        spectrographs = np.concatenate([o.spectrograph for o in obs_list])
+        pfsDesignIds = np.concatenate([o.pfsDesignId for o in obs_list])
+        fiberIds = np.concatenate([o.fiberId for o in obs_list])
+        pfiNominals = np.vstack([o.pfiNominal for o in obs_list])
+        pfiCenters = np.vstack([o.pfiCenter for o in obs_list])
+        obsTimes = sum([list(o.obsTime) for o in obs_list], [])
+        expTimes = np.concatenate([o.expTime for o in obs_list])
+        combined_obs = Observations(
+            visits, arms, spectrographs, pfsDesignIds, fiberIds,
+            pfiNominals, pfiCenters, obsTimes, expTimes
+        )
+    else:
+        combined_obs = None
+
+    return PfsObject(
+        target=specs[0].target,
+        observations=combined_obs,
+        wavelength=wave,
+        flux=combined_flux,
+        mask=combined_mask,
+        sky=combined_sky,
+        covar=combined_covar,
+        covar2=getattr(specs[0], "covar2", None),
+        flags=specs[0].flags,
+        metadata=getattr(specs[0], "metadata", None),
+    )
+
+
 def fetch_targets_from_db(conn, args):
     """
     Query target rows from v_target_summary or fallback to targets table.
@@ -210,6 +282,16 @@ def fetch_targets_from_db(conn, args):
     if args.max_z is not None:
         where_clauses.append("t.bestRedshift <= ?")
         params.append(args.max_z)
+    if getattr(args, "target_type", None) is not None:
+        if has_view:
+            where_clauses.append("t.targetTypeName = ?")
+            params.append(args.target_type.upper())
+        else:
+            where_clauses.append("EXISTS (SELECT 1 FROM fiber_configs fc WHERE fc.catId = t.catId AND fc.objId = t.objId AND fc.targetTypeName = ?)")
+            params.append(args.target_type.upper())
+    if getattr(args, "visit", None) is not None:
+        where_clauses.append("EXISTS (SELECT 1 FROM fiber_configs fc WHERE fc.catId = t.catId AND fc.objId = t.objId AND fc.visit = ?)")
+        params.append(args.visit)
 
     if has_view:
         if args.ob_code is not None:
@@ -286,6 +368,12 @@ def main():
                         help="Filter by maximum bestRedshift")
     parser.add_argument("--bin-width", type=float, default=0.5,
                         help="Wavelength bin width [nm] for plot (0 to disable binning)")
+    parser.add_argument("--dataset-type", choices=["auto", "coadd", "calibrated"], default="auto",
+                        help="Dataset type to extract: 'auto' (detect pfsCoadd or pfsCalibrated), 'coadd' (pfsCoadd), or 'calibrated' (pfsCalibrated / QL mode)")
+    parser.add_argument("--visit", type=int, default=None,
+                        help="Filter by specific visit (for calibrated / QL mode)")
+    parser.add_argument("--target-type", default=None,
+                        help="Filter by targetTypeName (e.g. SCIENCE, FLUXSTD, SKY)")
     parser.add_argument("--skip-fits", action="store_true",
                         help="Skip saving FITS raw data")
     parser.add_argument("--skip-png", action="store_true",
@@ -325,9 +413,43 @@ def main():
     print(f"Initializing Butler: repo={args.repo}, collections={args.collections}")
     butler = Butler(args.repo, collections=args.collections)
 
-    current_group_key = None
-    pfsCoadd = None
-    target_map = {}
+    # Determine extraction mode
+    dataset_type = args.dataset_type
+    if dataset_type == "auto":
+        types = [d.name for d in butler.registry.queryDatasetTypes()]
+        has_coadd = "pfsCoadd" in types and len(list(butler.registry.queryDatasets("pfsCoadd", collections=args.collections))) > 0
+        if has_coadd:
+            dataset_type = "coadd"
+        elif "pfsCalibrated" in types:
+            dataset_type = "calibrated"
+        else:
+            print("Error: Neither 'pfsCoadd' nor 'pfsCalibrated' datasets found in Butler repository.", file=sys.stderr)
+            sys.exit(1)
+
+    print(f"Extraction mode: {dataset_type} ({'pfsCoadd coadded spectra' if dataset_type == 'coadd' else 'pfsCalibrated QL / single-visit spectra'})")
+
+    if dataset_type == "calibrated":
+        cal_refs = list(butler.registry.queryDatasets("pfsCalibrated", collections=args.collections))
+        if args.visit is not None:
+            cal_refs = [r for r in cal_refs if r.dataId.get("visit") == args.visit]
+        visit_ref_map = {r.dataId["visit"]: r for r in cal_refs}
+        print(f"Found {len(visit_ref_map)} available calibrated visits in collections: {sorted(visit_ref_map.keys())}")
+
+        conn = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
+        cur = conn.cursor()
+        cur.execute("SELECT catId, objId, visit FROM fiber_configs")
+        target_visits_map = {}
+        for c_id, o_id, v_id in cur.fetchall():
+            target_visits_map.setdefault((c_id, o_id), []).append(v_id)
+        conn.close()
+
+        # Sort targets to group by visit for efficient LRU caching
+        targets.sort(key=lambda t: (target_visits_map.get((t["catId"], t["objId"]), [0])[0], t["catId"], t["objId"]))
+        cal_cache = OrderedDict()
+    else:
+        current_group_key = None
+        pfsCoadd = None
+        target_map = {}
 
     processed_count = 0
     fits_count = 0
@@ -356,26 +478,60 @@ def main():
             eff_z = None
             z_label = "z=N/A"
 
-        # Load pfsCoadd for this group if changed
-        group_key = (catId, combination, objGroup)
-        if group_key != current_group_key:
-            current_group_key = group_key
-            dataId = {"cat_id": catId, "combination": combination, "obj_group": objGroup}
-            print(f"\nLoading pfsCoadd for group: {dataId}")
-            try:
-                pfsCoadd = butler.get("pfsCoadd", dataId)
-                target_map = {t.objId: t for t in pfsCoadd.keys()}
-            except Exception as e:
-                print(f"  Warning: Failed to load pfsCoadd for {dataId}: {e}", file=sys.stderr)
-                pfsCoadd = None
-                target_map = {}
+        if dataset_type == "coadd":
+            # Load pfsCoadd for this group if changed
+            group_key = (catId, combination, objGroup)
+            if group_key != current_group_key:
+                current_group_key = group_key
+                dataId = {"cat_id": catId, "combination": combination, "obj_group": objGroup}
+                print(f"\nLoading pfsCoadd for group: {dataId}")
+                try:
+                    pfsCoadd = butler.get("pfsCoadd", dataId)
+                    target_map = {t.objId: t for t in pfsCoadd.keys()}
+                except Exception as e:
+                    print(f"  Warning: Failed to load pfsCoadd for {dataId}: {e}", file=sys.stderr)
+                    pfsCoadd = None
+                    target_map = {}
 
-        if pfsCoadd is None or objId not in target_map:
-            print(f"  [{i + 1}/{len(targets)}] objId={objId} not found in pfsCoadd group {group_key}. Skipping.")
-            continue
+            if pfsCoadd is None or objId not in target_map:
+                print(f"  [{i + 1}/{len(targets)}] objId={objId} not found in pfsCoadd group {group_key}. Skipping.")
+                continue
 
-        target = target_map[objId]
-        pfsObj = pfsCoadd[target]
+            target = target_map[objId]
+            pfsObj = pfsCoadd[target]
+            n_vis = None
+        else:
+            # Calibrated (QL) mode
+            target_visits = target_visits_map.get((catId, objId), [])
+            if args.visit is not None:
+                target_visits = [v for v in target_visits if v == args.visit]
+            relevant_visits = [v for v in target_visits if v in visit_ref_map]
+
+            if not relevant_visits:
+                relevant_visits = [v for v in visit_ref_map if v in cal_cache and objId in cal_cache[v]]
+                if not relevant_visits:
+                    relevant_visits = list(visit_ref_map.keys())
+
+            specs = []
+            for v in relevant_visits:
+                if v not in cal_cache:
+                    if len(cal_cache) >= 6:
+                        cal_cache.popitem(last=False)
+                    print(f"\nLoading pfsCalibrated for visit {v}...")
+                    pfsCal = butler.get(visit_ref_map[v])
+                    cal_cache[v] = {t.objId: (t, pfsCal[t]) for t in pfsCal.keys()}
+                else:
+                    cal_cache.move_to_end(v)
+
+                if objId in cal_cache[v]:
+                    specs.append(cal_cache[v][objId][1])
+
+            if not specs:
+                print(f"  [{i + 1}/{len(targets)}] objId={objId} not found in pfsCalibrated visits {relevant_visits}. Skipping.")
+                continue
+
+            pfsObj = combine_pfs_single_spectra(specs)
+            n_vis = len(specs)
 
         comb_suffix = f"_{combination}" if combination is not None else ""
         base_name = f"{obCode}_{catId}_{objId}{comb_suffix}" if obCode else f"{catId}_{objId}{comb_suffix}"
@@ -427,6 +583,8 @@ def main():
                 title_parts.append(z_label)
                 if bestSubClass:
                     title_parts.append(f"subClass: {bestSubClass}")
+                if dataset_type == "calibrated" and n_vis:
+                    title_parts.append(f"{n_vis} visit{'s' if n_vis > 1 else ''} (QL)")
                 title = " | ".join(title_parts)
 
                 plot_spectrum_with_lines(

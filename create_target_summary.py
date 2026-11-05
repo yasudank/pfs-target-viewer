@@ -187,6 +187,39 @@ def main():
     {join_tf};
     """
     cur.execute(insert_sql)
+    if targets_count == 0 and fc_count > 0:
+        print("    ℹ️  'targets' table is empty. Populating from fiber_configs (QL / raw mode)...", flush=True)
+        cur.execute("""
+            INSERT INTO target_summary (
+                catId, objId, combination, objGroup,
+                obCode, targetTypeName, fiberStatusName, ra, dec,
+                classificationName, probaGalaxy, probaStar, probaQSO,
+                bestRedshift, bestRedshiftError, bestVelocity, bestVelocityError,
+                bestSubClass, hasSolution,
+                nvisit, exptime,
+                has_fits, fits_path, has_png, png_path
+            )
+            SELECT 
+                fc.catId, fc.objId, 'raw', 0,
+                fc.obCode, fc.targetTypeName, fc.fiberStatusName, fc.ra, fc.dec,
+                'UNKNOWN', NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL,
+                NULL, 0,
+                vis_cnt.n_visits, NULL,
+                0, NULL, 0, NULL
+            FROM (
+                SELECT catId, objId, obCode, targetTypeName, fiberStatusName, ra, dec,
+                       ROW_NUMBER() OVER (PARTITION BY catId, objId ORDER BY visit DESC) as rn
+                FROM fiber_configs
+                WHERE targetTypeName IN ('SCIENCE', 'FLUXSTD', 'SKY')
+            ) fc
+            LEFT JOIN (
+                SELECT catId, objId, COUNT(DISTINCT visit) as n_visits
+                FROM fiber_configs
+                GROUP BY catId, objId
+            ) vis_cnt ON fc.catId = vis_cnt.catId AND fc.objId = vis_cnt.objId
+            WHERE fc.rn = 1;
+        """)
     if has_file_cols:
         cur.execute("DROP TABLE IF EXISTS _temp_target_files")
     conn.commit()
@@ -227,8 +260,10 @@ def main():
     verify_duration = time.time() - t_verify
 
     print(f"    Count: {summary_count:,} rows (Query took {verify_duration:.4f}s)", flush=True)
-    if summary_count != targets_count:
+    if summary_count != targets_count and targets_count > 0:
         print(f"    ⚠️  Warning: summary count ({summary_count}) differs from targets count ({targets_count})", flush=True)
+    elif targets_count == 0 and summary_count > 0:
+        print(f"    ✨ Verified: Populated {summary_count:,} targets from fiber_configs (QL / raw mode)!", flush=True)
     else:
         print("    ✨ Verified: Row count perfectly matches source targets table!", flush=True)
 

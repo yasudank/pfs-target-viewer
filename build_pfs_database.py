@@ -27,6 +27,8 @@ Must be run inside the PFS pipeline environment, e.g.:
         --db pfs_metadata.sqlite3
 """
 import argparse
+import json
+import os
 import sqlite3
 
 import numpy as np
@@ -651,6 +653,45 @@ def populate_target_summary(conn):
     conn.commit()
     cur.execute("SELECT count(*) FROM target_summary")
     cnt = cur.fetchone()[0]
+    if cnt == 0:
+        cur.execute("SELECT count(*) FROM fiber_configs")
+        fc_cnt = cur.fetchone()[0]
+        if fc_cnt > 0:
+            print(f"  Note: 'targets' table is empty. Populating target_summary from fiber_configs (QL / raw mode)...")
+            cur.execute("""
+                INSERT INTO target_summary (
+                    catId, objId, combination, objGroup,
+                    obCode, targetTypeName, fiberStatusName, ra, dec,
+                    classificationName, probaGalaxy, probaStar, probaQSO,
+                    bestRedshift, bestRedshiftError, bestVelocity, bestVelocityError,
+                    bestSubClass, hasSolution,
+                    nvisit, exptime,
+                    has_fits, fits_path, has_png, png_path
+                )
+                SELECT 
+                    fc.catId, fc.objId, 'raw', 0,
+                    fc.obCode, fc.targetTypeName, fc.fiberStatusName, fc.ra, fc.dec,
+                    'UNKNOWN', NULL, NULL, NULL,
+                    NULL, NULL, NULL, NULL,
+                    NULL, 0,
+                    vis_cnt.n_visits, NULL,
+                    0, NULL, 0, NULL
+                FROM (
+                    SELECT catId, objId, obCode, targetTypeName, fiberStatusName, ra, dec,
+                           ROW_NUMBER() OVER (PARTITION BY catId, objId ORDER BY visit DESC) as rn
+                    FROM fiber_configs
+                    WHERE targetTypeName IN ('SCIENCE', 'FLUXSTD', 'SKY')
+                ) fc
+                LEFT JOIN (
+                    SELECT catId, objId, COUNT(DISTINCT visit) as n_visits
+                    FROM fiber_configs
+                    GROUP BY catId, objId
+                ) vis_cnt ON fc.catId = vis_cnt.catId AND fc.objId = vis_cnt.objId
+                WHERE fc.rn = 1;
+            """)
+            conn.commit()
+            cur.execute("SELECT count(*) FROM target_summary")
+            cnt = cur.fetchone()[0]
     print(f"target_summary populated successfully with {cnt:,} rows.")
 
 

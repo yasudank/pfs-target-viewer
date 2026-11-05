@@ -14,9 +14,11 @@ Run via run_pfs.py in the PFS pipeline environment:
 """
 import argparse
 from collections import OrderedDict
+import multiprocessing as mp
 import os
 import sqlite3
 import sys
+import time
 import numpy as np
 
 import matplotlib
@@ -251,6 +253,238 @@ def combine_pfs_single_spectra(specs):
     )
 
 
+# Shared spectral cache accessed by worker processes via Linux fork (Copy-On-Write)
+# In calibrated mode: _SHARED_CACHE[visit] = {objId: PfsSingle}
+# In coadd mode:      _SHARED_CACHE[objId] = PfsObject
+_SHARED_CACHE = {}
+
+
+def process_target_task(task):
+    """
+    Worker task to process a single target:
+    - Extracts or combines spectral data from _SHARED_CACHE
+    - Writes FITS file (if not skip_fits)
+    - Generates PNG spectrum plot with emission/absorption lines (if not skip_png)
+    - Extracts observation metadata (nvisit, exptime) for database update
+    """
+    try:
+        tinfo, relevant_visits, cfg = task
+
+        catId = tinfo["catId"]
+        objId = tinfo["objId"]
+        combination = tinfo["combination"]
+        objGroup = tinfo["objGroup"]
+        obCode = tinfo.get("obCode") or ""
+        cname = tinfo.get("classificationName") or "UNKNOWN"
+        bestZ = tinfo.get("bestRedshift")
+        bestV = tinfo.get("bestVelocity")
+        bestSubClass = tinfo.get("bestSubClass") or ""
+
+        dataset_type = cfg["dataset_type"]
+        fits_dir = cfg["fits_dir"]
+        png_dir = cfg["png_dir"]
+
+        # Determine effective redshift for line plotting
+        if cname == "STAR" and bestV is not None and np.isfinite(bestV):
+            eff_z = bestV / C_KMS
+            z_label = f"v={bestV:.1f} km/s (z={eff_z:.5f})"
+        elif bestZ is not None and np.isfinite(bestZ):
+            eff_z = bestZ
+            z_label = f"z={bestZ:.4f}"
+        else:
+            eff_z = None
+            z_label = "z=N/A"
+
+        if dataset_type == "coadd":
+            if objId not in _SHARED_CACHE:
+                return {"status": "skipped", "catId": catId, "objId": objId,
+                        "msg": f"objId={objId} not found in pfsCoadd group"}
+            pfsObj = _SHARED_CACHE[objId]
+            n_vis = None
+        else:
+            # Calibrated (QL) mode
+            specs = []
+            for v in relevant_visits:
+                if v in _SHARED_CACHE and objId in _SHARED_CACHE[v]:
+                    specs.append(_SHARED_CACHE[v][objId])
+
+            if not specs:
+                return {"status": "skipped", "catId": catId, "objId": objId,
+                        "msg": f"objId={objId} not found in pfsCalibrated visits {relevant_visits}"}
+
+            pfsObj = combine_pfs_single_spectra(specs)
+            n_vis = len(specs)
+
+        comb_suffix = f"_{combination}" if combination is not None else ""
+        base_name = f"{obCode}_{catId}_{objId}{comb_suffix}" if obCode else f"{catId}_{objId}{comb_suffix}"
+        safe_base_name = "".join(c if (c.isalnum() or c in "._-") else "_" for c in base_name)
+
+        if cfg["no_shard"]:
+            target_fits_dir = fits_dir
+            target_png_dir = png_dir
+            rel_fits_sub = ""
+            rel_png_sub = ""
+        else:
+            shard_sub = os.path.join(str(catId), f"{int(objId) % 1000:03d}")
+            target_fits_dir = os.path.join(fits_dir, shard_sub)
+            target_png_dir = os.path.join(png_dir, shard_sub)
+            rel_fits_sub = shard_sub
+            rel_png_sub = shard_sub
+
+        fits_saved = False
+        png_saved = False
+        saved_fits_rel = None
+        saved_png_rel = None
+
+        # 1. Save FITS
+        if not cfg["skip_fits"]:
+            os.makedirs(target_fits_dir, exist_ok=True)
+            if cfg["fits_naming"] == "standard":
+                pfsObj.write(target_fits_dir)
+                fits_saved = True
+                saved_fits_rel = os.path.join("fits", rel_fits_sub) if rel_fits_sub else "fits"
+            else:
+                fits_filename = f"pfsObject_{safe_base_name}.fits"
+                fits_path = os.path.join(target_fits_dir, fits_filename)
+                if cfg["overwrite"] or not os.path.exists(fits_path):
+                    pfsObj.writeFits(fits_path)
+                    fits_saved = True
+                saved_fits_rel = os.path.join("fits", rel_fits_sub, fits_filename) if rel_fits_sub else os.path.join("fits", fits_filename)
+
+        # 2. Save PNG
+        if not cfg["skip_png"]:
+            os.makedirs(target_png_dir, exist_ok=True)
+            png_filename = f"spec_{safe_base_name}.png"
+            png_path = os.path.join(target_png_dir, png_filename)
+            if cfg["overwrite"] or not os.path.exists(png_path):
+                title_parts = [f"objId: {objId}"]
+                if obCode:
+                    title_parts.append(f"obCode: {obCode}")
+                title_parts.append(f"catId: {catId}")
+                title_parts.append(f"class: {cname}")
+                title_parts.append(z_label)
+                if bestSubClass:
+                    title_parts.append(f"subClass: {bestSubClass}")
+                if dataset_type == "calibrated" and n_vis:
+                    title_parts.append(f"{n_vis} visit{'s' if n_vis > 1 else ''} (QL)")
+                title = " | ".join(title_parts)
+
+                plot_spectrum_with_lines(
+                    pfsObj,
+                    redshift=eff_z,
+                    title=title,
+                    out_png=png_path,
+                    bin_width=cfg["bin_width"] if cfg["bin_width"] > 0 else None,
+                )
+                png_saved = True
+            saved_png_rel = os.path.join("png", rel_png_sub, png_filename) if rel_png_sub else os.path.join("png", png_filename)
+
+        rec = None
+        if not cfg["no_update_db"]:
+            rec = {
+                "catId": catId,
+                "objId": objId,
+                "combination": combination,
+                "nvisit": None,
+                "exptime": None,
+            }
+            if not cfg["skip_fits"]:
+                rec["has_fits"] = 1 if saved_fits_rel else 0
+                rec["fits_path"] = saved_fits_rel
+            if not cfg["skip_png"]:
+                rec["has_png"] = 1 if saved_png_rel else 0
+                rec["png_path"] = saved_png_rel
+
+            # Extract nvisit and exptime from observations
+            if hasattr(pfsObj, "observations") and pfsObj.observations is not None:
+                obs = pfsObj.observations
+                visits = getattr(obs, "visit", None)
+                exp_times = getattr(obs, "expTime", None)
+                if visits is not None and len(visits) > 0:
+                    rec["nvisit"] = len(set(visits))
+                    if exp_times is not None and len(exp_times) == len(visits):
+                        vexp = {}
+                        for v, exp in zip(visits, exp_times):
+                            if exp is not None and not np.isnan(exp):
+                                exp_val = float(exp)
+                                if v not in vexp or exp_val > vexp[v]:
+                                    vexp[v] = exp_val
+                        if vexp:
+                            rec["exptime"] = round(sum(vexp.values()), 3)
+
+        return {
+            "status": "ok",
+            "catId": catId,
+            "objId": objId,
+            "fits_saved": fits_saved,
+            "png_saved": png_saved,
+            "rec": rec,
+        }
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        tinfo = task[0] if isinstance(task, (tuple, list)) and len(task) > 0 else {}
+        return {
+            "status": "error",
+            "catId": tinfo.get("catId"),
+            "objId": tinfo.get("objId"),
+            "msg": f"{e}\n{tb}",
+        }
+
+
+def run_tasks(tasks, num_workers, progress_label="targets"):
+    """
+    Execute tasks sequentially (num_workers=1) or using multiprocessing pool (num_workers>1).
+    Yields result dicts with progress reporting.
+    """
+    total = len(tasks)
+    if total == 0:
+        return
+
+    effective_workers = min(num_workers, total)
+    t_start = time.time()
+    processed = 0
+    fits_count = 0
+    png_count = 0
+
+    if effective_workers <= 1:
+        for i, task in enumerate(tasks):
+            res = process_target_task(task)
+            if res.get("status") == "ok":
+                processed += 1
+                if res.get("fits_saved"):
+                    fits_count += 1
+                if res.get("png_saved"):
+                    png_count += 1
+            elif res.get("status") == "error":
+                print(f"  Error processing objId={res.get('objId')}: {res.get('msg')}", file=sys.stderr)
+
+            if (i + 1) % 10 == 0 or (i + 1) == total:
+                elapsed = time.time() - t_start
+                rate = (i + 1) / elapsed if elapsed > 0 else 0
+                print(f"  Processed [{i + 1}/{total}] {progress_label} ({rate:.1f} targets/s, FITS: {fits_count}, PNG: {png_count})")
+            yield res
+    else:
+        ctx = mp.get_context("fork")
+        chunksize = max(1, min(32, total // (effective_workers * 4)))
+        with ctx.Pool(processes=effective_workers) as pool:
+            for i, res in enumerate(pool.imap_unordered(process_target_task, tasks, chunksize=chunksize)):
+                if res.get("status") == "ok":
+                    processed += 1
+                    if res.get("fits_saved"):
+                        fits_count += 1
+                    if res.get("png_saved"):
+                        png_count += 1
+                elif res.get("status") == "error":
+                    print(f"  Error processing objId={res.get('objId')}: {res.get('msg')}", file=sys.stderr)
+
+                if (i + 1) % 50 == 0 or (i + 1) == total:
+                    elapsed = time.time() - t_start
+                    rate = (i + 1) / elapsed if elapsed > 0 else 0
+                    print(f"  Processed [{i + 1}/{total}] {progress_label} ({rate:.1f} targets/s, FITS: {fits_count}, PNG: {png_count})")
+                yield res
+
+
 def fetch_targets_from_db(conn, args):
     """
     Query target rows from v_target_summary or fallback to targets table.
@@ -386,7 +620,15 @@ def main():
                         help="Do not update target_summary table in database with output file paths")
     parser.add_argument("--overwrite", action="store_true",
                         help="Overwrite existing output files")
+    parser.add_argument("-j", "--num-workers", "--threads", type=int, default=1, dest="num_workers",
+                        help="Number of worker processes for parallel processing (default: 1; set >1 to enable parallel processing, or 0 for all CPUs)")
     args = parser.parse_args()
+
+    if args.num_workers is None or args.num_workers < 1:
+        if args.num_workers == 0:
+            args.num_workers = max(1, os.cpu_count() or 1)
+        else:
+            args.num_workers = 1
 
     os.makedirs(args.outdir, exist_ok=True)
     fits_dir = os.path.join(args.outdir, "fits")
@@ -427,6 +669,25 @@ def main():
             sys.exit(1)
 
     print(f"Extraction mode: {dataset_type} ({'pfsCoadd coadded spectra' if dataset_type == 'coadd' else 'pfsCalibrated QL / single-visit spectra'})")
+    print(f"Parallel workers: {args.num_workers} ({'multiprocessing enabled' if args.num_workers > 1 else 'sequential mode'})")
+
+    cfg = {
+        "dataset_type": dataset_type,
+        "skip_fits": args.skip_fits,
+        "skip_png": args.skip_png,
+        "bin_width": args.bin_width,
+        "fits_naming": args.fits_naming,
+        "no_shard": args.no_shard,
+        "overwrite": args.overwrite,
+        "no_update_db": args.no_update_db,
+        "fits_dir": fits_dir,
+        "png_dir": png_dir,
+    }
+
+    processed_count = 0
+    fits_count = 0
+    png_count = 0
+    db_updates = []
 
     if dataset_type == "calibrated":
         cal_refs = list(butler.registry.queryDatasets("pfsCalibrated", collections=args.collections))
@@ -443,197 +704,83 @@ def main():
             target_visits_map.setdefault((c_id, o_id), []).append(v_id)
         conn.close()
 
-        # Sort targets to group by visit for efficient LRU caching
-        targets.sort(key=lambda t: (target_visits_map.get((t["catId"], t["objId"]), [0])[0], t["catId"], t["objId"]))
-        cal_cache = OrderedDict()
-    else:
-        current_group_key = None
-        pfsCoadd = None
-        target_map = {}
+        # Find which visits are actually needed for selected targets
+        needed_visits = set()
+        for t in targets:
+            for v in target_visits_map.get((t["catId"], t["objId"]), []):
+                if v in visit_ref_map:
+                    needed_visits.add(v)
+        if not needed_visits:
+            needed_visits = set(visit_ref_map.keys())
+        needed_visits = sorted(needed_visits)
 
-    processed_count = 0
-    fits_count = 0
-    png_count = 0
-    db_updates = []
+        print(f"Loading {len(needed_visits)} pfsCalibrated visit(s) into shared memory: {needed_visits}")
+        _SHARED_CACHE.clear()
+        for vi, v in enumerate(needed_visits, 1):
+            t0 = time.time()
+            pfsCal = butler.get(visit_ref_map[v])
+            _SHARED_CACHE[v] = {t.objId: pfsCal[t] for t in pfsCal.keys()}
+            dt = time.time() - t0
+            print(f"  [{vi}/{len(needed_visits)}] Loaded visit {v}: {len(_SHARED_CACHE[v])} targets ({dt:.1f}s)")
 
-    for i, tinfo in enumerate(targets):
-        catId = tinfo["catId"]
-        objId = tinfo["objId"]
-        combination = tinfo["combination"]
-        objGroup = tinfo["objGroup"]
-        obCode = tinfo.get("obCode") or ""
-        cname = tinfo.get("classificationName") or "UNKNOWN"
-        bestZ = tinfo.get("bestRedshift")
-        bestV = tinfo.get("bestVelocity")
-        bestSubClass = tinfo.get("bestSubClass") or ""
-
-        # Determine effective redshift for line plotting
-        if cname == "STAR" and bestV is not None and np.isfinite(bestV):
-            eff_z = bestV / C_KMS
-            z_label = f"v={bestV:.1f} km/s (z={eff_z:.5f})"
-        elif bestZ is not None and np.isfinite(bestZ):
-            eff_z = bestZ
-            z_label = f"z={bestZ:.4f}"
-        else:
-            eff_z = None
-            z_label = "z=N/A"
-
-        if dataset_type == "coadd":
-            # Load pfsCoadd for this group if changed
-            group_key = (catId, combination, objGroup)
-            if group_key != current_group_key:
-                current_group_key = group_key
-                dataId = {"cat_id": catId, "combination": combination, "obj_group": objGroup}
-                print(f"\nLoading pfsCoadd for group: {dataId}")
-                try:
-                    pfsCoadd = butler.get("pfsCoadd", dataId)
-                    target_map = {t.objId: t for t in pfsCoadd.keys()}
-                except Exception as e:
-                    print(f"  Warning: Failed to load pfsCoadd for {dataId}: {e}", file=sys.stderr)
-                    pfsCoadd = None
-                    target_map = {}
-
-            if pfsCoadd is None or objId not in target_map:
-                print(f"  [{i + 1}/{len(targets)}] objId={objId} not found in pfsCoadd group {group_key}. Skipping.")
-                continue
-
-            target = target_map[objId]
-            pfsObj = pfsCoadd[target]
-            n_vis = None
-        else:
-            # Calibrated (QL) mode
+        tasks = []
+        for tinfo in targets:
+            catId = tinfo["catId"]
+            objId = tinfo["objId"]
             target_visits = target_visits_map.get((catId, objId), [])
             if args.visit is not None:
                 target_visits = [v for v in target_visits if v == args.visit]
-            relevant_visits = [v for v in target_visits if v in visit_ref_map]
+            relevant = [v for v in target_visits if v in _SHARED_CACHE]
+            if not relevant:
+                relevant = [v for v in _SHARED_CACHE if objId in _SHARED_CACHE[v]]
+            tasks.append((tinfo, relevant, cfg))
 
-            if not relevant_visits:
-                relevant_visits = [v for v in visit_ref_map if v in cal_cache and objId in cal_cache[v]]
-                if not relevant_visits:
-                    relevant_visits = list(visit_ref_map.keys())
+        print(f"\nProcessing {len(tasks)} targets with {args.num_workers} worker(s)...")
+        for res in run_tasks(tasks, args.num_workers, progress_label="targets"):
+            if res.get("status") == "ok":
+                processed_count += 1
+                if res.get("fits_saved"):
+                    fits_count += 1
+                if res.get("png_saved"):
+                    png_count += 1
+                if res.get("rec"):
+                    db_updates.append(res["rec"])
+            elif res.get("status") == "skipped":
+                print(f"  Skipped objId={res.get('objId')}: {res.get('msg')}")
 
-            specs = []
-            for v in relevant_visits:
-                if v not in cal_cache:
-                    if len(cal_cache) >= 6:
-                        cal_cache.popitem(last=False)
-                    print(f"\nLoading pfsCalibrated for visit {v}...")
-                    pfsCal = butler.get(visit_ref_map[v])
-                    cal_cache[v] = {t.objId: (t, pfsCal[t]) for t in pfsCal.keys()}
-                else:
-                    cal_cache.move_to_end(v)
+    else:
+        # Group targets by (catId, combination, objGroup)
+        groups = OrderedDict()
+        for tinfo in targets:
+            gkey = (tinfo["catId"], tinfo["combination"], tinfo["objGroup"])
+            groups.setdefault(gkey, []).append(tinfo)
 
-                if objId in cal_cache[v]:
-                    specs.append(cal_cache[v][objId][1])
-
-            if not specs:
-                print(f"  [{i + 1}/{len(targets)}] objId={objId} not found in pfsCalibrated visits {relevant_visits}. Skipping.")
+        print(f"Processing {len(targets)} targets across {len(groups)} coadd group(s) with {args.num_workers} worker(s)...")
+        for gi, (gkey, g_targets) in enumerate(groups.items(), 1):
+            catId, combination, objGroup = gkey
+            dataId = {"cat_id": catId, "combination": combination, "obj_group": objGroup}
+            print(f"\n[{gi}/{len(groups)}] Loading pfsCoadd for group: {dataId} ({len(g_targets)} targets)")
+            try:
+                pfsCoadd = butler.get("pfsCoadd", dataId)
+                _SHARED_CACHE.clear()
+                for t in pfsCoadd.keys():
+                    _SHARED_CACHE[t.objId] = pfsCoadd[t]
+            except Exception as e:
+                print(f"  Warning: Failed to load pfsCoadd for {dataId}: {e}", file=sys.stderr)
                 continue
 
-            pfsObj = combine_pfs_single_spectra(specs)
-            n_vis = len(specs)
-
-        comb_suffix = f"_{combination}" if combination is not None else ""
-        base_name = f"{obCode}_{catId}_{objId}{comb_suffix}" if obCode else f"{catId}_{objId}{comb_suffix}"
-        # Sanitize filename
-        safe_base_name = "".join(c if (c.isalnum() or c in "._-") else "_" for c in base_name)
-
-        # Determine output directories (Sharded vs Flat)
-        if args.no_shard:
-            target_fits_dir = fits_dir
-            target_png_dir = png_dir
-            rel_fits_sub = ""
-            rel_png_sub = ""
-        else:
-            shard_sub = os.path.join(str(catId), f"{int(objId) % 1000:03d}")
-            target_fits_dir = os.path.join(fits_dir, shard_sub)
-            target_png_dir = os.path.join(png_dir, shard_sub)
-            rel_fits_sub = shard_sub
-            rel_png_sub = shard_sub
-
-        saved_fits_rel = None
-        saved_png_rel = None
-
-        # 1. Save FITS
-        if not args.skip_fits:
-            os.makedirs(target_fits_dir, exist_ok=True)
-            if args.fits_naming == "standard":
-                pfsObj.write(target_fits_dir)
-                fits_count += 1
-                saved_fits_rel = os.path.join("fits", rel_fits_sub) if rel_fits_sub else "fits"
-            else:
-                fits_filename = f"pfsObject_{safe_base_name}.fits"
-                fits_path = os.path.join(target_fits_dir, fits_filename)
-                if args.overwrite or not os.path.exists(fits_path):
-                    pfsObj.writeFits(fits_path)
-                    fits_count += 1
-                saved_fits_rel = os.path.join("fits", rel_fits_sub, fits_filename) if rel_fits_sub else os.path.join("fits", fits_filename)
-
-        # 2. Save PNG
-        if not args.skip_png:
-            os.makedirs(target_png_dir, exist_ok=True)
-            png_filename = f"spec_{safe_base_name}.png"
-            png_path = os.path.join(target_png_dir, png_filename)
-            if args.overwrite or not os.path.exists(png_path):
-                title_parts = [f"objId: {objId}"]
-                if obCode:
-                    title_parts.append(f"obCode: {obCode}")
-                title_parts.append(f"catId: {catId}")
-                title_parts.append(f"class: {cname}")
-                title_parts.append(z_label)
-                if bestSubClass:
-                    title_parts.append(f"subClass: {bestSubClass}")
-                if dataset_type == "calibrated" and n_vis:
-                    title_parts.append(f"{n_vis} visit{'s' if n_vis > 1 else ''} (QL)")
-                title = " | ".join(title_parts)
-
-                plot_spectrum_with_lines(
-                    pfsObj,
-                    redshift=eff_z,
-                    title=title,
-                    out_png=png_path,
-                    bin_width=args.bin_width if args.bin_width > 0 else None,
-                )
-                png_count += 1
-            saved_png_rel = os.path.join("png", rel_png_sub, png_filename) if rel_png_sub else os.path.join("png", png_filename)
-
-        if not args.no_update_db:
-            rec = {
-                "catId": catId,
-                "objId": objId,
-                "combination": combination,
-                "nvisit": None,
-                "exptime": None,
-            }
-            if not args.skip_fits:
-                rec["has_fits"] = 1 if saved_fits_rel else 0
-                rec["fits_path"] = saved_fits_rel
-            if not args.skip_png:
-                rec["has_png"] = 1 if saved_png_rel else 0
-                rec["png_path"] = saved_png_rel
-
-            # Extract nvisit and exptime from observations
-            if hasattr(pfsObj, "observations") and pfsObj.observations is not None:
-                obs = pfsObj.observations
-                visits = getattr(obs, "visit", None)
-                exp_times = getattr(obs, "expTime", None)
-                if visits is not None and len(visits) > 0:
-                    rec["nvisit"] = len(set(visits))
-                    if exp_times is not None and len(exp_times) == len(visits):
-                        vexp = {}
-                        for v, exp in zip(visits, exp_times):
-                            if exp is not None and not np.isnan(exp):
-                                exp_val = float(exp)
-                                if v not in vexp or exp_val > vexp[v]:
-                                    vexp[v] = exp_val
-                        if vexp:
-                            rec["exptime"] = round(sum(vexp.values()), 3)
-
-            db_updates.append(rec)
-
-        processed_count += 1
-        if (i + 1) % 10 == 0 or (i + 1) == len(targets):
-            print(f"  Processed [{i + 1}/{len(targets)}] targets (FITS: {fits_count}, PNG: {png_count})")
+            tasks = [(tinfo, None, cfg) for tinfo in g_targets]
+            for res in run_tasks(tasks, args.num_workers, progress_label=f"targets in group {gkey}"):
+                if res.get("status") == "ok":
+                    processed_count += 1
+                    if res.get("fits_saved"):
+                        fits_count += 1
+                    if res.get("png_saved"):
+                        png_count += 1
+                    if res.get("rec"):
+                        db_updates.append(res["rec"])
+                elif res.get("status") == "skipped":
+                    print(f"  Skipped objId={res.get('objId')}: {res.get('msg')}")
 
     if not args.no_update_db and db_updates:
         print(f"\nUpdating file paths in {args.db} for {len(db_updates)} targets...")

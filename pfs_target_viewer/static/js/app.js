@@ -1631,22 +1631,14 @@ function initEventListeners() {
   elements.prevPageBtn.addEventListener("click", () => {
     if (state.page > 1) {
       state.page--;
-      if (state.filterMode === "sql" && state.activeSqlQuery) {
-        runSqlQuery(state.page, true, false);
-      } else {
-        fetchTargets();
-      }
+      loadCurrentPage();
     }
   });
 
   elements.nextPageBtn.addEventListener("click", () => {
     if (state.page < state.pages) {
       state.page++;
-      if (state.filterMode === "sql" && state.activeSqlQuery) {
-        runSqlQuery(state.page, true, false);
-      } else {
-        fetchTargets();
-      }
+      loadCurrentPage();
     }
   });
 
@@ -1654,11 +1646,7 @@ function initEventListeners() {
     const val = parseInt(elements.pageJumpInput.value, 10);
     if (!isNaN(val) && val >= 1 && val <= state.pages) {
       state.page = val;
-      if (state.filterMode === "sql" && state.activeSqlQuery) {
-        runSqlQuery(state.page, true, false);
-      } else {
-        fetchTargets();
-      }
+      loadCurrentPage();
       elements.pageJumpInput.value = "";
     }
   });
@@ -3358,8 +3346,19 @@ function updateImageNavButtons(canPrev, canNext) {
   });
 }
 
+// Load state.page with the active filter mode (SQL query results or standard filters)
+async function loadCurrentPage() {
+  if (state.filterMode === "sql" && state.activeSqlQuery) {
+    await runSqlQuery(state.page, true, false);
+  } else {
+    await fetchTargets();
+  }
+}
+
 async function navigateImagePreview(direction) {
   if (!state.imagePreviewList || state.imagePreviewList.length === 0) return;
+  // Ignore navigation while a page is loading (e.g. key auto-repeat at a page boundary)
+  if (state.loading) return;
 
   const newIdx = state.imagePreviewIndex + direction;
   const list = state.imagePreviewList;
@@ -3371,7 +3370,7 @@ async function navigateImagePreview(direction) {
   } else if (isPageList) {
     if (direction > 0 && state.page < state.pages) {
       state.page++;
-      await fetchTargets();
+      await loadCurrentPage();
       state.imagePreviewList = state.targets;
       state.imagePreviewIndex = 0;
       if (state.targets && state.targets.length > 0) {
@@ -3379,7 +3378,7 @@ async function navigateImagePreview(direction) {
       }
     } else if (direction < 0 && state.page > 1) {
       state.page--;
-      await fetchTargets();
+      await loadCurrentPage();
       state.imagePreviewList = state.targets;
       state.imagePreviewIndex = state.targets.length - 1;
       if (state.targets && state.targets.length > 0) {

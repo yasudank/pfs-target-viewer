@@ -3524,7 +3524,7 @@ async function loadSkyCutout(ra, dec) {
     // Update survey badge and title
     if (elements.hscSurveyTitle && elements.hscSurveyBadge) {
       if (isFallback) {
-        elements.hscSurveyTitle.innerHTML = `🪐 Pan-STARRS Sky Cutout <small style="font-size:0.74rem; font-weight:400; color:#fbbf24;">(Fallback)</small>`;
+        elements.hscSurveyTitle.innerHTML = `🪐 Sky Cutout <small style="font-size:0.74rem; font-weight:400; color:#fbbf24;">(Fallback)</small>`;
         elements.hscSurveyBadge.textContent = surveyName;
         elements.hscSurveyBadge.classList.add("fallback");
       } else {
@@ -3536,7 +3536,7 @@ async function loadSkyCutout(ra, dec) {
 
     // Update expanded tab metadata
     if (elements.expandedSurveyName) elements.expandedSurveyName.textContent = surveyName;
-    if (elements.expandedCoverageStatus) elements.expandedCoverageStatus.textContent = isFallback ? "Outside HSC Coverage (Pan-STARRS Fallback)" : "Within Subaru HSC Coverage";
+    if (elements.expandedCoverageStatus) elements.expandedCoverageStatus.textContent = isFallback ? `Outside HSC Coverage (${surveyName} Fallback)` : "Within Subaru HSC Coverage";
     if (elements.expandedCoords) elements.expandedCoords.textContent = `RA: ${ra.toFixed(6)}°, Dec: ${dec.toFixed(6)}°`;
     if (elements.expandedSexagesimal) elements.expandedSexagesimal.textContent = `${hms}, ${dms}`;
     if (elements.expandedTargetInfo && state.activeTarget) {

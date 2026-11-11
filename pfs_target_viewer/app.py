@@ -12,6 +12,7 @@ import gzip
 import os
 import sqlite3
 import time
+import urllib.error
 import urllib.parse
 import math
 import re
@@ -1456,9 +1457,16 @@ def download_fits(catId: int, objId: str, combination: Optional[str] = Query(Non
 
 
 # -----------------------------------------------------------------------------
-# Sky Cutout API (Subaru HSC & Pan-STARRS Fallback)
+# Sky Cutout API (Subaru HSC with Pan-STARRS / DSS2 Fallback)
 # -----------------------------------------------------------------------------
 SURVEY_HIPS_MAP = {
+    # HSC-SSP PDR3 color images served by the Legacy Survey viewer (does not depend on CDS)
+    "hsc_dr3": {
+        "source": "legacysurvey",
+        "layer": "hsc-dr3",
+        "name": "Subaru HSC PDR3 (Legacy Survey)",
+        "badge": "Subaru HSC",
+    },
     "hsc_wide": {
         "id": "CDS/P/HSC/DR2/wide/color-i-r-g",
         "name": "Subaru HSC DR2 (Wide)",
@@ -1482,6 +1490,42 @@ SURVEY_HIPS_MAP = {
 }
 
 
+# Surveys that are not a fallback from the HSC point of view
+HSC_SURVEYS = {"hsc_dr3", "hsc_wide", "hsc_deep"}
+# Order tried by survey=auto
+AUTO_SURVEY_ORDER = ["hsc_dr3", "hsc_wide", "panstarrs", "dss"]
+
+# Skip a host for a while after a connection-level failure (timeout, refused,
+# DNS) so that every cutout request does not wait for the full timeout again.
+HOST_RETRY_INTERVAL_SEC = 300
+_host_down_until: Dict[str, float] = {}
+_host_down_lock = threading.Lock()
+
+
+def _fetch_url_bytes(url: str, timeout: int = 8) -> Optional[bytes]:
+    """GET ``url`` and return the body, or None on failure (with the reason logged)."""
+    host = urllib.parse.urlsplit(url).hostname or ""
+    with _host_down_lock:
+        down_until = _host_down_until.get(host, 0.0)
+    if time.time() < down_until:
+        return None
+    req = urllib.request.Request(url, headers={"User-Agent": "PFSTargetViewer/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                return resp.read()
+            print(f"  ⚠️ Cutout fetch from {host} returned HTTP {resp.status}")
+    except urllib.error.HTTPError as e:
+        print(f"  ⚠️ Cutout fetch from {host} failed: HTTP {e.code} {e.reason}")
+    except Exception as e:
+        # Connection-level failure: mark the host as down for a while
+        with _host_down_lock:
+            _host_down_until[host] = time.time() + HOST_RETRY_INTERVAL_SEC
+        print(f"  ⚠️ Cutout fetch from {host} failed ({type(e).__name__}: {e}); "
+              f"skipping this host for {HOST_RETRY_INTERVAL_SEC} s")
+    return None
+
+
 def fetch_hips_cutout_raw(hips_id: str, ra: float, dec: float, fov: float, width: int = 300, height: int = 300, timeout: int = 8) -> Optional[bytes]:
     """Fetch raw JPEG cutout from CDS hips2fits service."""
     encoded_hips = urllib.parse.quote(hips_id, safe="")
@@ -1489,15 +1533,26 @@ def fetch_hips_cutout_raw(hips_id: str, ra: float, dec: float, fov: float, width
         f"https://alasky.cds.unistra.fr/hips-image-services/hips2fits"
         f"?hips={encoded_hips}&ra={ra}&dec={dec}&fov={fov}&width={width}&height={height}&format=jpg"
     )
-    req = urllib.request.Request(url, headers={"User-Agent": "PFSTargetViewer/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            if resp.status == 200:
-                data = resp.read()
-                return data
-    except Exception:
-        return None
-    return None
+    return _fetch_url_bytes(url, timeout=timeout)
+
+
+def fetch_legacysurvey_cutout_raw(layer: str, ra: float, dec: float, fov: float, width: int = 300, height: int = 300, timeout: int = 8) -> Optional[bytes]:
+    """Fetch raw JPEG cutout from the Legacy Survey viewer (fov in degrees spans the image width)."""
+    pixscale = fov * 3600.0 / width  # arcsec / pixel
+    url = (
+        f"https://www.legacysurvey.org/viewer/cutout.jpg"
+        f"?ra={ra}&dec={dec}&layer={urllib.parse.quote(layer)}"
+        f"&pixscale={pixscale:.6f}&width={width}&height={height}"
+    )
+    return _fetch_url_bytes(url, timeout=timeout)
+
+
+def fetch_survey_cutout(survey_key: str, ra: float, dec: float, fov: float, width: int, height: int) -> Optional[bytes]:
+    """Fetch a cutout for one entry of SURVEY_HIPS_MAP."""
+    conf = SURVEY_HIPS_MAP[survey_key]
+    if conf.get("source") == "legacysurvey":
+        return fetch_legacysurvey_cutout_raw(conf["layer"], ra, dec, fov, width, height)
+    return fetch_hips_cutout_raw(conf["id"], ra, dec, fov, width, height)
 
 
 @app.get("/api/targets/cutout")
@@ -1511,8 +1566,9 @@ def get_target_cutout(
 ):
     """
     Retrieve or cache a sky cutout image for a target coordinate.
-    If survey is 'auto', automatically tries Subaru HSC DR2 wide, and if outside
-    HSC coverage (or dummy blank white image returned), falls back to Pan-STARRS DR1 (or DSS2).
+    If survey is 'auto', tries Subaru HSC PDR3 (Legacy Survey viewer, independent of CDS),
+    then HSC DR2 wide via CDS hips2fits, and if outside HSC coverage (blank image) or the
+    services are unreachable, falls back to Pan-STARRS DR1 and DSS2 (CDS hips2fits).
     """
     survey_key = survey.lower().strip()
     if survey_key != "auto" and survey_key not in SURVEY_HIPS_MAP:
@@ -1554,37 +1610,21 @@ def get_target_cutout(
     img_data = None
 
     if survey_key == "auto":
-        # First attempt: Subaru HSC DR2 Wide
-        hsc_conf = SURVEY_HIPS_MAP["hsc_wide"]
-        img_data = fetch_hips_cutout_raw(hsc_conf["id"], ra, dec, fov, width, height)
-        if img_data and not is_blank_or_out_of_coverage(img_data):
-            survey_used = "hsc_wide"
-            survey_name = hsc_conf["name"]
-            is_fallback = False
-        else:
-            # Fallback 1: Pan-STARRS DR1
-            ps_conf = SURVEY_HIPS_MAP["panstarrs"]
-            img_data = fetch_hips_cutout_raw(ps_conf["id"], ra, dec, fov, width, height)
-            if img_data and not is_blank_or_out_of_coverage(img_data):
-                survey_used = "panstarrs"
-                survey_name = ps_conf["name"]
-                is_fallback = True
-            else:
-                # Fallback 2: DSS2
-                dss_conf = SURVEY_HIPS_MAP["dss"]
-                img_data = fetch_hips_cutout_raw(dss_conf["id"], ra, dec, fov, width, height)
-                if img_data:
-                    survey_used = "dss"
-                    survey_name = dss_conf["name"]
-                    is_fallback = True
-    elif survey_key in SURVEY_HIPS_MAP:
-        conf = SURVEY_HIPS_MAP[survey_key]
-        img_data = fetch_hips_cutout_raw(conf["id"], ra, dec, fov, width, height)
-        survey_used = survey_key
-        survey_name = conf["name"]
-        is_fallback = False
+        # HSC PDR3 (Legacy Survey) -> HSC DR2 (CDS) -> Pan-STARRS DR1 (CDS) -> DSS2 (CDS)
+        for i, key in enumerate(AUTO_SURVEY_ORDER):
+            data = fetch_survey_cutout(key, ra, dec, fov, width, height)
+            is_last = i == len(AUTO_SURVEY_ORDER) - 1
+            if data and (is_last or not is_blank_or_out_of_coverage(data)):
+                img_data = data
+                survey_used = key
+                break
     else:
-        raise HTTPException(status_code=400, detail=f"Unsupported survey: {survey}")
+        img_data = fetch_survey_cutout(survey_key, ra, dec, fov, width, height)
+        survey_used = survey_key
+
+    if img_data:
+        survey_name = SURVEY_HIPS_MAP[survey_used]["name"]
+        is_fallback = survey_used not in HSC_SURVEYS
 
     if not img_data:
         raise HTTPException(status_code=502, detail="Unable to fetch cutout image from astronomical image services.")

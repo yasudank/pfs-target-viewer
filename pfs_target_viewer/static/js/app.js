@@ -212,6 +212,7 @@ const elements = {
   imageModalDownload: document.getElementById("imageModalDownload"),
   imageModalClose: document.getElementById("imageModalClose"),
   openInteractiveFromImageBtn: document.getElementById("openInteractiveFromImageBtn"),
+  openDetailsFromImageBtn: document.getElementById("openDetailsFromImageBtn"),
   imageFloatPrevBtn: document.getElementById("imageFloatPrevBtn"),
   imageFloatNextBtn: document.getElementById("imageFloatNextBtn"),
   imageFooterPrevBtn: document.getElementById("imageFooterPrevBtn"),
@@ -1727,6 +1728,14 @@ function initEventListeners() {
       openInteractiveSpectrumById(state.activeTarget.catId, state.activeTarget.objId);
     }
   });
+
+  if (elements.openDetailsFromImageBtn) {
+    elements.openDetailsFromImageBtn.addEventListener("click", () => {
+      elements.imageModal.style.display = "none";
+      const t = state.activeTarget;
+      if (t) openTargetDetails(t.catId, t.objId, t.combination || null);
+    });
+  }
 
   elements.openInteractiveFromDetailsBtn.addEventListener("click", () => {
     elements.detailsModal.style.display = "none";

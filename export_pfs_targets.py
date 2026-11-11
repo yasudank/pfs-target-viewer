@@ -331,6 +331,7 @@ def process_target_task(task):
             rel_fits_sub = shard_sub
             rel_png_sub = shard_sub
 
+        overwrite = cfg["overwrite"] or bool(tinfo.get("force_overwrite"))
         fits_saved = False
         png_saved = False
         saved_fits_rel = None
@@ -346,7 +347,7 @@ def process_target_task(task):
             else:
                 fits_filename = f"pfsObject_{safe_base_name}.fits"
                 fits_path = os.path.join(target_fits_dir, fits_filename)
-                if cfg["overwrite"] or not os.path.exists(fits_path):
+                if overwrite or not os.path.exists(fits_path):
                     pfsObj.writeFits(fits_path)
                     fits_saved = True
                 saved_fits_rel = os.path.join("fits", rel_fits_sub, fits_filename) if rel_fits_sub else os.path.join("fits", fits_filename)
@@ -356,7 +357,7 @@ def process_target_task(task):
             os.makedirs(target_png_dir, exist_ok=True)
             png_filename = f"spec_{safe_base_name}.png"
             png_path = os.path.join(target_png_dir, png_filename)
-            if cfg["overwrite"] or not os.path.exists(png_path):
+            if overwrite or not os.path.exists(png_path):
                 title_parts = [f"objId: {objId}"]
                 if obCode:
                     title_parts.append(f"obCode: {obCode}")
@@ -387,6 +388,7 @@ def process_target_task(task):
                 "combination": combination,
                 "nvisit": None,
                 "exptime": None,
+                "exported_last_visit": tinfo.get("last_visit"),
             }
             if not cfg["skip_fits"]:
                 rec["has_fits"] = 1 if saved_fits_rel else 0
@@ -495,6 +497,10 @@ def fetch_targets_from_db(conn, args):
     cur.execute("SELECT name FROM sqlite_master WHERE type='view' AND name='v_target_summary'")
     has_view = cur.fetchone() is not None
 
+    cur.execute("PRAGMA table_info(target_summary)")
+    ts_cols = {row[1] for row in cur.fetchall()}
+    has_export_cols = has_view and {"last_visit", "exported_last_visit"} <= ts_cols
+
     where_clauses = []
     params = []
 
@@ -527,10 +533,20 @@ def fetch_targets_from_db(conn, args):
         where_clauses.append("EXISTS (SELECT 1 FROM fiber_configs fc WHERE fc.catId = t.catId AND fc.objId = t.objId AND fc.visit = ?)")
         params.append(args.visit)
 
+    if getattr(args, "only_new", False):
+        if not has_export_cols:
+            print("Error: --only-new requires target_summary.last_visit / exported_last_visit columns. "
+                  "Re-run build_pfs_database.py on this database first.", file=sys.stderr)
+            sys.exit(1)
+        # Never exported, or observed again after the last export
+        where_clauses.append("(t.exported_last_visit IS NULL OR t.exported_last_visit < t.last_visit)")
+
     if has_view:
         if args.ob_code is not None:
             where_clauses.append("t.obCode LIKE ?")
             params.append(args.ob_code)
+        export_cols_sql = (", t.last_visit, t.exported_last_visit" if has_export_cols
+                           else ", NULL AS last_visit, NULL AS exported_last_visit")
 
         where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
         query = f"""
@@ -539,7 +555,7 @@ def fetch_targets_from_db(conn, args):
             t.obCode, t.targetTypeName, t.fiberStatusName, t.ra, t.dec,
             t.classificationName, t.probaGalaxy, t.probaStar, t.probaQSO,
             t.bestRedshift, t.bestRedshiftError, t.bestVelocity, t.bestVelocityError,
-            t.bestSubClass, t.hasSolution
+            t.bestSubClass, t.hasSolution{export_cols_sql}
         FROM v_target_summary t
         {where_sql}
         ORDER BY t.catId, t.combination, t.objGroup, t.objId
@@ -569,7 +585,12 @@ def fetch_targets_from_db(conn, args):
     cur.execute(query, params)
     rows = cur.fetchall()
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in rows]
+    targets = [dict(zip(cols, row)) for row in rows]
+    if getattr(args, "only_new", False):
+        # Re-observed targets already have (now outdated) files: regenerate them
+        for t in targets:
+            t["force_overwrite"] = t.get("exported_last_visit") is not None
+    return targets
 
 
 def main():
@@ -620,6 +641,10 @@ def main():
                         help="Do not update target_summary table in database with output file paths")
     parser.add_argument("--overwrite", action="store_true",
                         help="Overwrite existing output files")
+    parser.add_argument("--only-new", action="store_true",
+                        help="Process only targets never exported or observed in visits newer than the last "
+                             "export (files of re-observed targets are overwritten). For QL data, pass all "
+                             "collections containing earlier visits too, so that all visits are combined.")
     parser.add_argument("-j", "--num-workers", "--threads", type=int, default=1, dest="num_workers",
                         help="Number of worker processes for parallel processing (default: 1; set >1 to enable parallel processing, or 0 for all CPUs)")
     args = parser.parse_args()
@@ -648,6 +673,9 @@ def main():
     conn.close()
 
     print(f"Found {len(targets)} targets matching criteria.")
+    if args.only_new:
+        n_reobs = sum(1 for t in targets if t.get("force_overwrite"))
+        print(f"  --only-new: {len(targets) - n_reobs} never exported, {n_reobs} re-observed (will be overwritten)")
     if len(targets) == 0:
         print("No targets to process. Exiting.")
         return
@@ -735,6 +763,23 @@ def main():
                 relevant = [v for v in _SHARED_CACHE if objId in _SHARED_CACHE[v]]
             tasks.append((tinfo, relevant, cfg))
 
+        # Warn when some visits of a target are not available in the given collections
+        missing_visits = set()
+        n_incomplete = 0
+        for tinfo in targets:
+            tv = set(target_visits_map.get((tinfo["catId"], tinfo["objId"]), []))
+            if args.visit is not None:
+                tv &= {args.visit}
+            miss = tv - set(visit_ref_map)
+            if miss:
+                n_incomplete += 1
+                missing_visits |= miss
+        if missing_visits:
+            print(f"  Warning: {n_incomplete} target(s) have visits not found as pfsCalibrated in "
+                  f"collections {args.collections}: {sorted(missing_visits)}. "
+                  "Their spectra will combine only the available visits; add the collections "
+                  "containing these visits to --collections to include them.", file=sys.stderr)
+
         print(f"\nProcessing {len(tasks)} targets with {args.num_workers} worker(s)...")
         for res in run_tasks(tasks, args.num_workers, progress_label="targets"):
             if res.get("status") == "ok":
@@ -800,12 +845,15 @@ def main():
                 update_cols.append("nvisit = COALESCE(:nvisit, nvisit)")
             if "exptime" in cols:
                 update_cols.append("exptime = COALESCE(:exptime, exptime)")
+            if "exported_last_visit" in cols:
+                update_cols.append("exported_last_visit = COALESCE(:exported_last_visit, exported_last_visit)")
 
             if update_cols:
                 # Ensure all binding parameter keys exist across every record in batch
                 for r in db_updates:
                     r.setdefault("nvisit", None)
                     r.setdefault("exptime", None)
+                    r.setdefault("exported_last_visit", None)
                     if not args.skip_fits:
                         r.setdefault("has_fits", 0)
                         r.setdefault("fits_path", None)

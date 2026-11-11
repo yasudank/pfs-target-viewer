@@ -247,6 +247,8 @@ CREATE TABLE IF NOT EXISTS target_summary (
     fits_path TEXT,
     has_png INTEGER DEFAULT 0,
     png_path TEXT,
+    last_visit INTEGER,
+    exported_last_visit INTEGER,
     PRIMARY KEY (catId, objId, combination)
 );
 CREATE INDEX IF NOT EXISTS idx_ts_classification ON target_summary (classificationName);
@@ -605,28 +607,53 @@ def load_redshift_candidates(butler, conn, limit=None):
               f"{len(lineRows)} line measurements")
 
 
+def migrate_target_summary(conn):
+    """Add export-tracking columns to an existing target_summary table.
+
+    Must run *before* new visits are loaded into fiber_configs: targets that
+    already have exported files are marked as exported up to the latest visit
+    known at that time, so that only targets touched by newly added visits are
+    selected by ``export_pfs_targets.py --only-new``.
+    """
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(target_summary)")
+    cols = {row[1] for row in cur.fetchall()}
+    latest_visit_sql = ("(SELECT MAX(fc.visit) FROM fiber_configs fc "
+                        "WHERE fc.catId = target_summary.catId AND fc.objId = target_summary.objId)")
+    if "last_visit" not in cols:
+        cur.execute("ALTER TABLE target_summary ADD COLUMN last_visit INTEGER")
+        cur.execute(f"UPDATE target_summary SET last_visit = {latest_visit_sql}")
+    if "exported_last_visit" not in cols:
+        cur.execute("ALTER TABLE target_summary ADD COLUMN exported_last_visit INTEGER")
+        cur.execute(f"UPDATE target_summary SET exported_last_visit = {latest_visit_sql} "
+                    "WHERE has_fits = 1 OR has_png = 1")
+        print(f"Migrated target_summary: marked {cur.rowcount:,} already-exported targets "
+              "with exported_last_visit.")
+    conn.commit()
+
+
 def populate_target_summary(conn):
-    """Populate target_summary materialized table from targets and latest fiber_configs while preserving file paths."""
+    """Populate target_summary materialized table from targets and latest fiber_configs.
+
+    File paths (has_fits/fits_path/has_png/png_path) and export state
+    (exported_last_visit) of existing rows are preserved across rebuilds.
+    """
     print("\nPopulating target_summary materialized table...")
     cur = conn.cursor()
 
-    # Check if target_summary exists and has existing file path entries to preserve
-    cur.execute("PRAGMA table_info(target_summary)")
-    cols = {row[1] for row in cur.fetchall()}
-    has_file_cols = "has_fits" in cols and "fits_path" in cols
-
+    # Preserve file paths and export state of existing rows
     cur.execute("DROP TABLE IF EXISTS _temp_target_files")
-    if has_file_cols:
-        cur.execute("""
-            CREATE TEMP TABLE _temp_target_files AS
-            SELECT catId, objId, combination, has_fits, fits_path, has_png, png_path
-            FROM target_summary
-            WHERE has_fits = 1 OR has_png = 1
-        """)
-        cur.execute("SELECT count(*) FROM _temp_target_files")
-        preserved = cur.fetchone()[0]
-        if preserved > 0:
-            print(f"  Preserving {preserved:,} existing file path records...")
+    cur.execute("""
+        CREATE TEMP TABLE _temp_target_files AS
+        SELECT catId, objId, combination, has_fits, fits_path, has_png, png_path,
+               exported_last_visit
+        FROM target_summary
+        WHERE has_fits = 1 OR has_png = 1 OR exported_last_visit IS NOT NULL
+    """)
+    cur.execute("SELECT count(*) FROM _temp_target_files")
+    preserved = cur.fetchone()[0]
+    if preserved > 0:
+        print(f"  Preserving {preserved:,} existing file path records...")
 
     cur.execute("DELETE FROM target_summary")
     cur.execute("""
@@ -637,7 +664,8 @@ def populate_target_summary(conn):
             bestRedshift, bestRedshiftError, bestVelocity, bestVelocityError,
             bestSubClass, hasSolution,
             nvisit, exptime,
-            has_fits, fits_path, has_png, png_path
+            has_fits, fits_path, has_png, png_path,
+            last_visit, exported_last_visit
         )
         SELECT 
             t.catId, t.objId, t.combination, t.objGroup,
@@ -646,16 +674,16 @@ def populate_target_summary(conn):
             t.bestRedshift, t.bestRedshiftError, t.bestVelocity, t.bestVelocityError,
             t.bestSubClass, t.hasSolution,
             t.nvisit, t.exptime,
-            COALESCE(tf.has_fits, 0), tf.fits_path, COALESCE(tf.has_png, 0), tf.png_path
+            COALESCE(tf.has_fits, 0), tf.fits_path, COALESCE(tf.has_png, 0), tf.png_path,
+            fc.visit, tf.exported_last_visit
         FROM targets t
         LEFT JOIN (
-            SELECT catId, objId, obCode, targetTypeName, fiberStatusName, ra, dec,
+            SELECT catId, objId, visit, obCode, targetTypeName, fiberStatusName, ra, dec,
                    ROW_NUMBER() OVER (PARTITION BY catId, objId ORDER BY visit DESC) as rn
             FROM fiber_configs
         ) fc ON t.catId = fc.catId AND t.objId = fc.objId AND fc.rn = 1
         LEFT JOIN _temp_target_files tf ON t.catId = tf.catId AND t.objId = tf.objId AND t.combination = tf.combination;
     """)
-    cur.execute("DROP TABLE IF EXISTS _temp_target_files")
     conn.commit()
     cur.execute("SELECT count(*) FROM target_summary")
     cnt = cur.fetchone()[0]
@@ -672,7 +700,8 @@ def populate_target_summary(conn):
                     bestRedshift, bestRedshiftError, bestVelocity, bestVelocityError,
                     bestSubClass, hasSolution,
                     nvisit, exptime,
-                    has_fits, fits_path, has_png, png_path
+                    has_fits, fits_path, has_png, png_path,
+                    last_visit, exported_last_visit
                 )
                 SELECT 
                     fc.catId, fc.objId, 'ql', 0,
@@ -681,9 +710,10 @@ def populate_target_summary(conn):
                     NULL, NULL, NULL, NULL,
                     NULL, 0,
                     vis_cnt.n_visits, NULL,
-                    0, NULL, 0, NULL
+                    COALESCE(tf.has_fits, 0), tf.fits_path, COALESCE(tf.has_png, 0), tf.png_path,
+                    fc.visit, tf.exported_last_visit
                 FROM (
-                    SELECT catId, objId, obCode, targetTypeName, fiberStatusName, ra, dec,
+                    SELECT catId, objId, visit, obCode, targetTypeName, fiberStatusName, ra, dec,
                            ROW_NUMBER() OVER (PARTITION BY catId, objId ORDER BY visit DESC) as rn
                     FROM fiber_configs
                     WHERE targetTypeName IN ('SCIENCE', 'FLUXSTD', 'SKY')
@@ -693,12 +723,25 @@ def populate_target_summary(conn):
                     FROM fiber_configs
                     GROUP BY catId, objId
                 ) vis_cnt ON fc.catId = vis_cnt.catId AND fc.objId = vis_cnt.objId
+                LEFT JOIN _temp_target_files tf
+                    ON fc.catId = tf.catId AND fc.objId = tf.objId AND tf.combination = 'ql'
                 WHERE fc.rn = 1;
             """)
             conn.commit()
             cur.execute("SELECT count(*) FROM target_summary")
             cnt = cur.fetchone()[0]
+    cur.execute("DROP TABLE IF EXISTS _temp_target_files")
+    conn.commit()
     print(f"target_summary populated successfully with {cnt:,} rows.")
+    cur.execute("""
+        SELECT
+            SUM(exported_last_visit IS NULL),
+            SUM(exported_last_visit IS NOT NULL AND exported_last_visit < last_visit)
+        FROM target_summary
+    """)
+    n_unexported, n_updated = cur.fetchone()
+    print(f"  Targets pending export (export_pfs_targets.py --only-new): "
+          f"{n_unexported or 0:,} never exported, {n_updated or 0:,} with new visits.")
 
 
 KNOWN_SPECTRAL_REST_WAVELENGTHS = {
@@ -795,6 +838,7 @@ def main():
     conn = sqlite3.connect(args.db)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    migrate_target_summary(conn)
 
     if not args.skip_fiber_configs:
         load_fiber_configs(butler, conn, limit=args.limit_visits)

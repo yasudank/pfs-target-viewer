@@ -31,6 +31,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 
 import numpy as np
 from astropy.table import Row
@@ -828,9 +829,10 @@ def main():
                          help="Do not (re-)populate the target/candidate tables")
     parser.add_argument("--skip-target-summary", action="store_true",
                          help="Do not (re-)populate the target_summary table")
-    parser.add_argument("--predictions-db", type=str,
-                         default="/mnt/ugnas/work/PFS/pfs_specClass2/results/pfs_full_survey_predictions.sqlite3",
-                         help="Path to pfs_specClass2 predictions SQLite DB to import (set empty to skip)")
+    parser.add_argument("--predictions-db", type=str, default=None,
+                         help="Path to pfs_specClass2 predictions SQLite DB to import "
+                              "(e.g. /mnt/ugnas/work/PFS/pfs_specClass2/results/pfs_full_survey_predictions.sqlite3). "
+                              "Not imported unless specified.")
     args = parser.parse_args()
 
     butler = Butler(args.repo, collections=args.collections)
@@ -847,9 +849,12 @@ def main():
         export_spectral_lines_cache(conn, args.db)
     if not args.skip_target_summary:
         populate_target_summary(conn)
-    if args.predictions_db and os.path.exists(args.predictions_db):
-        from import_ml_predictions import import_predictions
-        import_predictions(args.predictions_db, args.db)
+    if args.predictions_db:
+        if os.path.exists(args.predictions_db):
+            from import_ml_predictions import import_predictions
+            import_predictions(args.predictions_db, args.db)
+        else:
+            print(f"Warning: predictions DB not found, skipping import: {args.predictions_db}", file=sys.stderr)
 
     conn.close()
     print(f"Done. Database written to {args.db}")

@@ -26,8 +26,10 @@ pfs-target-viewer/
     ├── app.py                     # FastAPI backend server & FITS/SQLite parser
     ├── requirements.txt           # Viewer dependencies (Pipeline-independent)
     ├── run_viewer.sh              # One-click launcher (auto-creates venv)
+    ├── datasets.example.toml      # Sample multi-dataset config (copy to datasets.toml)
     ├── templates/
-    │   └── index.html             # Dashboard UI template
+    │   ├── index.html             # Dashboard UI template
+    │   └── datasets.html          # Dataset selection page
     └── static/
         ├── css/
         │   └── style.css          # Dark-themed astronomical UI styling
@@ -126,7 +128,13 @@ cd pfs_target_viewer
 
 # If pfs_metadata.sqlite3 and extracted_targets/ are in a different directory:
 ./run_viewer.sh /path/to/dataset
+
+# To switch between several datasets in the browser (optionally password-protected):
+cp datasets.example.toml datasets.toml && vi datasets.toml
+./run_viewer.sh
 ```
+
+See "Multiple Datasets" in [pfs_target_viewer/README.md](pfs_target_viewer/README.md) for the config format.
 
 Then open `http://localhost:8090` in your web browser.
 

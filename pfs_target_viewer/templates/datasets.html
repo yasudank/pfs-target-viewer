@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Select Dataset – PFS Target & Spectrum Viewer</title>
+  <link rel="stylesheet" href="/static/css/style.css?v=2.9">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    .ds-page {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 2.5rem 1rem 4rem;
+    }
+    .ds-page h2 {
+      font-size: 1.15rem;
+      font-weight: 600;
+      margin-bottom: 0.35rem;
+    }
+    .ds-page .ds-lead {
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+      margin-bottom: 1.5rem;
+    }
+    .ds-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .ds-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 1rem 1.15rem;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .ds-card:hover {
+      background: var(--bg-card-hover);
+      border-color: rgba(56, 189, 248, 0.35);
+    }
+    .ds-card.is-current {
+      border-color: rgba(56, 189, 248, 0.6);
+    }
+    .ds-head {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .ds-title {
+      flex: 1;
+      min-width: 0;
+    }
+    .ds-name {
+      font-weight: 600;
+      font-size: 1.02rem;
+      overflow-wrap: anywhere;
+    }
+    .ds-desc {
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+      margin-top: 0.2rem;
+      overflow-wrap: anywhere;
+    }
+    .ds-badges {
+      display: flex;
+      gap: 0.35rem;
+      margin-top: 0.4rem;
+      flex-wrap: wrap;
+    }
+    .ds-badge {
+      font-size: 0.7rem;
+      padding: 0.1rem 0.5rem;
+      border-radius: 999px;
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+    }
+    .ds-badge.current {
+      color: var(--accent-cyan);
+      border-color: rgba(56, 189, 248, 0.5);
+    }
+    .ds-badge.locked {
+      color: #fbbf24;
+      border-color: rgba(251, 191, 36, 0.45);
+    }
+    .ds-badge.unlocked {
+      color: #34d399;
+      border-color: rgba(52, 211, 153, 0.45);
+    }
+    .ds-auth {
+      display: none;
+      gap: 0.5rem;
+      margin-top: 0.85rem;
+      flex-wrap: wrap;
+    }
+    .ds-card.show-auth .ds-auth {
+      display: flex;
+    }
+    .ds-auth input {
+      flex: 1;
+      min-width: 12rem;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      padding: 0.45rem 0.65rem;
+      font-size: 0.9rem;
+    }
+    .ds-auth input:focus {
+      outline: none;
+      border-color: var(--accent-blue);
+    }
+    .ds-error {
+      width: 100%;
+      color: #f87171;
+      font-size: 0.82rem;
+      min-height: 1em;
+    }
+    .ds-empty {
+      color: var(--text-secondary);
+      text-align: center;
+      padding: 2rem;
+      border: 1px dashed var(--border-color);
+      border-radius: var(--radius-md);
+    }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-content">
+      <div class="brand">
+        <div class="brand-logo">🌌</div>
+        <div class="brand-text">
+          <h1>PFS Target & Spectrum Viewer</h1>
+          <span class="sub-title">Subaru Prime Focus Spectrograph &bull; Coadd Data Explorer</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="ds-page">
+    <h2>Select a dataset</h2>
+    <p class="ds-lead">Choose the dataset to browse. Datasets marked 🔒 require a password.</p>
+
+    {% if datasets %}
+    <div class="ds-list">
+      {% for d in datasets %}
+      <div class="ds-card{% if d.current %} is-current{% endif %}"
+           data-id="{{ d.id }}" data-need-password="{{ 'true' if d.locked and not d.authorized else 'false' }}">
+        <div class="ds-head">
+          <div class="ds-title">
+            <div class="ds-name">{{ d.name }}</div>
+            {% if d.description %}<div class="ds-desc">{{ d.description }}</div>{% endif %}
+            <div class="ds-badges">
+              {% if d.current %}<span class="ds-badge current">Current</span>{% endif %}
+              {% if d.locked and not d.authorized %}<span class="ds-badge locked">🔒 Password</span>{% endif %}
+              {% if d.locked and d.authorized %}<span class="ds-badge unlocked">🔓 Unlocked</span>{% endif %}
+            </div>
+          </div>
+          <button type="button" class="btn btn-primary ds-open-btn">Open</button>
+        </div>
+        <form class="ds-auth" autocomplete="off">
+          <input type="password" class="ds-password" placeholder="Password" aria-label="Password for {{ d.name }}">
+          <button type="submit" class="btn btn-primary">Unlock &amp; Open</button>
+          <div class="ds-error" role="alert"></div>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="ds-empty">No datasets are configured. Add datasets to <code>datasets.toml</code> on the server.</div>
+    {% endif %}
+  </main>
+
+  <script>
+    async function selectDataset(card, password) {
+      const errEl = card.querySelector(".ds-error");
+      if (errEl) errEl.textContent = "";
+      const res = await fetch("/api/datasets/select", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: card.dataset.id, password: password || null }),
+      });
+      let data = {};
+      try { data = await res.json(); } catch (e) { /* ignore */ }
+      if (res.ok) {
+        window.location.href = data.redirect || "/";
+        return;
+      }
+      if (res.status === 403) {
+        card.classList.add("show-auth");
+        if (errEl) errEl.textContent = password ? "Incorrect password." : "";
+        const input = card.querySelector(".ds-password");
+        if (input) { input.select(); input.focus(); }
+      } else if (errEl) {
+        card.classList.add("show-auth");
+        errEl.textContent = data.detail || `Error (HTTP ${res.status})`;
+      }
+    }
+
+    document.querySelectorAll(".ds-card").forEach((card) => {
+      card.querySelector(".ds-open-btn").addEventListener("click", () => {
+        if (card.dataset.needPassword === "true") {
+          document.querySelectorAll(".ds-card.show-auth").forEach((c) => { if (c !== card) c.classList.remove("show-auth"); });
+          card.classList.add("show-auth");
+          card.querySelector(".ds-password").focus();
+        } else {
+          selectDataset(card, null);
+        }
+      });
+      card.querySelector(".ds-auth").addEventListener("submit", (e) => {
+        e.preventDefault();
+        selectDataset(card, card.querySelector(".ds-password").value);
+      });
+    });
+  </script>
+</body>
+</html>

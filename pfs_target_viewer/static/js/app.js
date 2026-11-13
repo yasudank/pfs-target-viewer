@@ -3,6 +3,42 @@
  * Handles searching, pagination, modals, and Plotly.js interactive spectra.
  */
 
+// ----------------------------------------------------------------------------
+// Dataset binding: every API request of this page targets the dataset it was opened with,
+// so browser tabs showing different datasets do not interfere with each other.
+// ----------------------------------------------------------------------------
+const PFS_DATASET_ID = window.PFS_DATASET_ID || null;
+
+// Append ?ds=<dataset> to API URLs used directly in <img src> / <a href> (no custom headers there)
+function dsUrl(url) {
+  if (!PFS_DATASET_ID) return url;
+  return url + (url.includes("?") ? "&" : "?") + "ds=" + encodeURIComponent(PFS_DATASET_ID);
+}
+
+(function bindFetchToDataset() {
+  const origFetch = window.fetch.bind(window);
+  window.fetch = async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const isApi = url.startsWith("/api/") || url.startsWith(window.location.origin + "/api/");
+    if (isApi && PFS_DATASET_ID) {
+      const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+      headers.set("X-PFS-Dataset", PFS_DATASET_ID);
+      init = { ...init, headers };
+    }
+    const res = await origFetch(input, init);
+    if (isApi && res.status === 401) {
+      // Not (or no longer) authorized for this dataset: go back to the dataset selection page
+      try {
+        const body = await res.clone().json();
+        if (body && body.code === "dataset_required") window.location.href = "/datasets";
+      } catch (e) {
+        // ignore
+      }
+    }
+    return res;
+  };
+})();
+
 // Global Spectral Line Reference for Astronomy Verification
 const SPECTRAL_LINES = [
   { name: "Lyβ", wave: 102.57, type: "emission" },
@@ -2150,7 +2186,7 @@ function renderTargetsTable(targets) {
 
       // Thumbnail
       const combParam = t.combination ? `?combination=${encodeURIComponent(t.combination)}` : "";
-      const thumbSrc = t.has_png ? `/api/targets/${t.catId}/${t.objId}/image${combParam}` : null;
+      const thumbSrc = t.has_png ? dsUrl(`/api/targets/${t.catId}/${t.objId}/image${combParam}`) : null;
       const thumbHtml = thumbSrc
         ? `<div class="thumb-container" onclick="openImagePreview(${t.catId}, '${t.objId}', '${t.obCode || ''}', '${t.combination || ''}')" title="Click to view full spectrum plot">
              <img src="${thumbSrc}" loading="lazy" alt="Spectrum thumbnail">
@@ -3315,7 +3351,7 @@ function displayImagePreview(target, index, total) {
 
   const combParam = target.combination ? `?combination=${encodeURIComponent(target.combination)}` : "";
   elements.imageModalImg.style.opacity = "0.6";
-  elements.imageModalImg.src = `/api/targets/${target.catId}/${target.objId}/image${combParam}`;
+  elements.imageModalImg.src = dsUrl(`/api/targets/${target.catId}/${target.objId}/image${combParam}`);
   elements.imageModalImg.onload = () => {
     elements.imageModalImg.style.opacity = "1";
   };
@@ -3325,7 +3361,7 @@ function displayImagePreview(target, index, total) {
 
   const combText = target.combination ? ` [${target.combination}]` : "";
   elements.imageModalTitle.textContent = `Coadded Spectrum: ${target.obCode || ""}${combText} (objId: ${target.objId}, catId: ${target.catId})`;
-  elements.imageModalDownload.href = `/api/targets/${target.catId}/${target.objId}/image${combParam}`;
+  elements.imageModalDownload.href = dsUrl(`/api/targets/${target.catId}/${target.objId}/image${combParam}`);
 
   const isPageList = state.imagePreviewList === state.targets;
   let subText = `Target ${index + 1} of ${total}`;
@@ -3464,7 +3500,7 @@ async function loadSkyCutout(ra, dec) {
   const aladinUrl = `https://aladin.cds.unistra.fr/AladinLite/?target=${ra.toFixed(6)}%20${dec.toFixed(6)}&fov=${(fovVal * 2).toFixed(4)}&survey=P%2FPanSTARRS%2FDR1%2Fcolor-z-zg-g`;
   if (elements.aladinLinkBtn) elements.aladinLinkBtn.href = aladinUrl;
 
-  const cutoutApiUrl = `/api/targets/cutout?ra=${ra}&dec=${dec}&fov=${fovVal}&width=300&height=300&survey=${surveyVal}`;
+  const cutoutApiUrl = dsUrl(`/api/targets/cutout?ra=${ra}&dec=${dec}&fov=${fovVal}&width=300&height=300&survey=${surveyVal}`);
   if (elements.fullCutoutLinkBtn) elements.fullCutoutLinkBtn.href = cutoutApiUrl;
 
   // FOV indicator
@@ -3903,7 +3939,7 @@ window.openInteractiveSpectrum = async function (target) {
   const combText = target.combination ? ` [${target.combination}]` : "";
   elements.spectrumModalTitle.textContent = `Interactive Spectrum: ${target.obCode || ""}${combText} (objId: ${objId})`;
   elements.spectrumModalSub.textContent = `catId: ${catId} | Class: ${target.classificationName || "UNKNOWN"}${target.combination ? ` | comb: ${target.combination}` : ""}`;
-  elements.downloadFitsBtn.href = `/api/targets/${catId}/${objId}/fits${combParam}`;
+  elements.downloadFitsBtn.href = dsUrl(`/api/targets/${catId}/${objId}/fits${combParam}`);
 
   // Determine initial redshift
   let initZ = 0.0;

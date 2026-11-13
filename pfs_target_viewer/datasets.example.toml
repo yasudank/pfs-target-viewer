@@ -1,0 +1,28 @@
+# Datasets selectable in the PFS Target & Spectrum Viewer.
+#
+# Copy this file to datasets.toml (next to app.py; it is git-ignored because it may contain
+# passwords) or pass it explicitly:  ./run_viewer.sh --config /path/to/datasets.toml
+#
+# The file is re-read automatically when it changes; no server restart is needed to add,
+# remove or edit datasets.
+
+# Optional: secret used to sign browser sessions. If omitted, a random secret is generated at
+# server start, so everyone has to select datasets / enter passwords again after a restart.
+# secret_key = "change-me-to-a-long-random-string"
+
+# Optional: how long a browser stays logged in to a dataset (days, default 7).
+# session_days = 7
+
+[[datasets]]
+id = "s26b047-ql"                          # used in URLs (?ds=...); derived from name if omitted
+name = "S26B-047 QL"
+description = "Quick-look reduction (run31)"
+dir = "/mnt/ugnas/work/LSST/PFS/S26B-047/QL"  # contains pfs_metadata.sqlite3 and extracted_targets/
+password = "secret"                        # omit for a dataset open to everyone
+
+[[datasets]]
+name = "S26A-104"
+dir = "/mnt/ugnas/work/LSST/PFS/S26A-104"
+# Database and extracted_targets directory can also be given separately:
+# db = "/path/to/pfs_metadata.sqlite3"
+# data_dir = "/path/to/extracted_targets"

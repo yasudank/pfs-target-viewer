@@ -29,3 +29,6 @@ __pycache__/
 .idea/
 *.swp
 *~
+
+# Viewer datasets config (may contain plaintext passwords); see pfs_target_viewer/datasets.example.toml
+pfs_target_viewer/datasets.toml

@@ -26,8 +26,10 @@ pfs-target-viewer/
     ├── app.py                     # FastAPI バックエンドサーバー & FITS/SQLite パーサー
     ├── requirements.txt           # ビューア用依存パッケージ一覧 (PFS パイプライン非依存)
     ├── run_viewer.sh              # ビューア起動スクリプト (venv 自動作成)
+    ├── datasets.example.toml      # 複数データセット設定のサンプル (datasets.toml にコピーして使用)
     ├── templates/
-    │   └── index.html             # ダッシュボード UI テンプレート
+    │   ├── index.html             # ダッシュボード UI テンプレート
+    │   └── datasets.html          # データセット選択画面
     └── static/
         ├── css/
         │   └── style.css          # 天文解析向けダークテーマ CSS
@@ -125,7 +127,13 @@ cd pfs_target_viewer
 
 # 別のディレクトリに pfs_metadata.sqlite3 と extracted_targets/ がある場合:
 ./run_viewer.sh /path/to/dataset
+
+# 複数のデータセットをブラウザで切り替える場合（パスワード保護も可能）:
+cp datasets.example.toml datasets.toml && vi datasets.toml
+./run_viewer.sh
 ```
+
+複数データセットの設定方法は [pfs_target_viewer/README_ja.md](pfs_target_viewer/README_ja.md) の「複数データセットの切り替え」を参照してください。
 
 ブラウザで `http://localhost:8090` にアクセスします。
 

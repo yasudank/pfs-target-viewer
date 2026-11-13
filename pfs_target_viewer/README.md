@@ -174,15 +174,52 @@ export PFS_DIR=/path/to/dataset
 ### Argument List
 
 ```bash
-python app.py [-h] [-d OPT_DIR] [--host HOST] [--port PORT] [--db DB] [--data-dir DATA_DIR] [target_dir]
+python app.py [-h] [-d OPT_DIR] [-c CONFIG] [--host HOST] [--port PORT] [--db DB] [--data-dir DATA_DIR] [target_dir]
 ```
 
 - `target_dir` (positional): Path to directory containing `pfs_metadata.sqlite3` and `extracted_targets/` (default: `..`)
 - `-d, --dir, --dataset-dir`: Path to directory containing `pfs_metadata.sqlite3` and `extracted_targets/`
+- `-c, --config`: Datasets config file (see below; defaults to `datasets.toml` next to `app.py` if it exists)
 - `--host`: Host interface to bind (default: `0.0.0.0`)
 - `--port`: Port to listen on (default: `8090`)
 - `--db`: Explicit path to SQLite database (overrides `--dir`)
 - `--data-dir`: Explicit path to `extracted_targets` directory (overrides `--dir`)
+
+---
+
+## Multiple Datasets (Config File)
+
+Register several datasets in `datasets.toml` and the browser shows a dataset selection page on access. Each dataset can optionally be protected by a password.
+
+```bash
+cp datasets.example.toml datasets.toml   # loaded automatically when placed next to app.py
+vi datasets.toml
+./run_viewer.sh
+
+# Or use a config file elsewhere:
+./run_viewer.sh --config /path/to/datasets.toml
+```
+
+```toml
+[[datasets]]
+id = "s26b047-ql"                              # ID used in URLs (?ds=...); derived from name if omitted
+name = "S26B-047 QL"
+description = "Quick-look reduction (run31)"
+dir = "/mnt/ugnas/work/LSST/PFS/S26B-047/QL"   # directory with pfs_metadata.sqlite3 and extracted_targets/
+password = "secret"                            # omit for a dataset open to everyone
+
+[[datasets]]
+name = "S26A-104"
+db = "/path/to/pfs_metadata.sqlite3"           # db / data_dir can be given instead of dir
+data_dir = "/path/to/extracted_targets"
+```
+
+- The selection page is `/datasets`. While browsing, the **⇄ Switch** button in the header returns to it.
+- The selected dataset and entered passwords are kept per browser (7 days by default; `session_days`). Several people can browse different datasets at the same time, and tabs of the same browser showing different datasets do not interfere.
+- `datasets.toml` is reloaded automatically when it changes (no restart needed). Changing a password invalidates existing logins to that dataset.
+- Passwords are stored in plain text, so `datasets.toml` is git-ignored; mind its file permissions.
+- Without `secret_key`, a random key is generated at each server start, so passwords must be entered again after a restart.
+- A dataset given with `--dir` etc. is listed first, in addition to the config datasets. With a single dataset without a password, the viewer opens directly without the selection page, as before.
 
 ---
 

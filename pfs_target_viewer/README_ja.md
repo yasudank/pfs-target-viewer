@@ -175,12 +175,49 @@ export PFS_DIR=/path/to/dataset
 ### 引数一覧
 
 ```bash
-python app.py [-h] [-d OPT_DIR] [--host HOST] [--port PORT] [--db DB] [--data-dir DATA_DIR] [target_dir]
+python app.py [-h] [-d OPT_DIR] [-c CONFIG] [--host HOST] [--port PORT] [--db DB] [--data-dir DATA_DIR] [target_dir]
 ```
 
 - `target_dir` (位置引数): `pfs_metadata.sqlite3` と `extracted_targets/` が存在するディレクトリパス（省略時はデフォルトで `..`）
 - `-d, --dir, --dataset-dir`: `pfs_metadata.sqlite3` と `extracted_targets/` が存在するディレクトリパス
+- `-c, --config`: 複数データセットの設定ファイル（後述。省略時は `app.py` と同じディレクトリの `datasets.toml` があれば使用）
 - `--host`: バインドするホスト名（デフォルト: `0.0.0.0`）
 - `--port`: リッスンするポート番号（デフォルト: `8090`）
 - `--db`: SQLite データベースファイルへの個別明示パス（個別指定時に `--dir` より優先）
 - `--data-dir`: `extracted_targets` ディレクトリへの個別明示パス（個別指定時に `--dir` より優先）
+
+---
+
+## 複数データセットの切り替え（設定ファイル）
+
+設定ファイル `datasets.toml` に複数のデータセットを登録しておくと、ブラウザでアクセスしたときにデータセットの選択画面が表示されます。データセットごとにパスワードを設定することもできます。
+
+```bash
+cp datasets.example.toml datasets.toml   # app.py と同じディレクトリに置くと自動で読み込まれる
+vi datasets.toml
+./run_viewer.sh
+
+# 別の場所の設定ファイルを使う場合:
+./run_viewer.sh --config /path/to/datasets.toml
+```
+
+```toml
+[[datasets]]
+id = "s26b047-ql"                              # URL (?ds=...) で使う ID。省略時は name から生成
+name = "S26B-047 QL"
+description = "Quick-look reduction (run31)"
+dir = "/mnt/ugnas/work/LSST/PFS/S26B-047/QL"   # pfs_metadata.sqlite3 と extracted_targets/ があるディレクトリ
+password = "secret"                            # 省略すると誰でも閲覧可能
+
+[[datasets]]
+name = "S26A-104"
+db = "/path/to/pfs_metadata.sqlite3"           # dir の代わりに個別指定も可能
+data_dir = "/path/to/extracted_targets"
+```
+
+- 選択画面は `/datasets` です。閲覧中もヘッダーの **⇄ Switch** ボタンで戻り、別のデータセットを開けます。
+- データセットの選択とパスワード入力の状態はブラウザごとに保持されます（既定で 7 日間、`session_days` で変更可）。複数の人が同時に別々のデータセットを閲覧できます。同じブラウザの別タブで別のデータセットを開いても干渉しません。
+- `datasets.toml` は変更すると自動で再読み込みされるため、データセットの追加・削除・パスワード変更にサーバーの再起動は不要です。パスワードを変更すると、そのデータセットのログイン状態は無効になります。
+- パスワードは平文で書くため、`datasets.toml` は `.gitignore` で git の管理対象外にしています。ファイルのパーミッションにも注意してください。
+- `secret_key` を設定しない場合はサーバー起動のたびにランダムな鍵が作られるため、再起動後はパスワードの再入力が必要です。
+- `--dir` などでディレクトリも指定した場合は、そのデータセットが設定ファイルのデータセットに加えて一覧の先頭に表示されます。データセットが 1 つだけでパスワードもない場合は、従来どおり選択画面を経由せずに表示されます。

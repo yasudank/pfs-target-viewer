@@ -4,8 +4,11 @@ PFS Target & Spectrum Viewer - Backend Application
 Provides REST API and static web dashboard for inspecting PFS target metadata,
 PNG spectra, and interactive FITS spectra from pfs_metadata.sqlite3 and extracted_targets.
 """
+import base64
+import contextvars
 import glob
 import hashlib
+import hmac
 import io
 import json
 import gzip
@@ -16,7 +19,9 @@ import urllib.error
 import urllib.parse
 import math
 import re
+import secrets
 import threading
+import tomllib
 import urllib.request
 from collections import OrderedDict
 from contextlib import asynccontextmanager
@@ -33,33 +38,29 @@ from astropy.io import fits
 from fastapi import FastAPI, HTTPException, Query, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from fastapi.templating import Jinja2Templates
 
 # Base directories
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_BASE_DATA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 
-DB_PATH = ""
-DATA_DIR = ""
-FITS_DIR = ""
-PNG_DIR = ""
-CUTOUT_CACHE_DIR = ""
-
-
 def resolve_paths(
     target_dir: Optional[str] = None,
     db_path: Optional[str] = None,
     data_dir: Optional[str] = None,
+    use_env: bool = True,
 ) -> tuple[str, str]:
     """Resolve database path and data directory from user inputs, environment variables, or defaults."""
+    env = os.getenv if use_env else (lambda _key: None)
     # 1. Determine base dataset directory
     raw_dir = (
         target_dir
-        or os.getenv("PFS_DATA_ROOT")
-        or os.getenv("PFS_DIR")
-        or os.getenv("PFS_DATASET_DIR")
+        or env("PFS_DATA_ROOT")
+        or env("PFS_DIR")
+        or env("PFS_DATASET_DIR")
     )
 
     if raw_dir:
@@ -95,77 +96,125 @@ def resolve_paths(
             candidate_data_dir = os.path.join(resolved_base, "extracted_targets")
 
     # 2. Explicit overrides (cmdline or specific env vars) take precedence
-    final_db = db_path or os.getenv("PFS_DB_PATH") or candidate_db
-    final_data = data_dir or os.getenv("PFS_DATA_DIR") or candidate_data_dir
+    final_db = db_path or env("PFS_DB_PATH") or candidate_db
+    final_data = data_dir or env("PFS_DATA_DIR") or candidate_data_dir
 
     return os.path.abspath(os.path.expanduser(final_db)), os.path.abspath(os.path.expanduser(final_data))
 
 
-# In-memory file index caches for ultra-fast O(1) lookups without disk/NFS I/O
-FITS_FILE_SET: Set[str] = set()
-PNG_FILE_SET: Set[str] = set()
-_FILES_INDEXED: bool = False
+def _scan_dir_count(base_dir: str, ext: str) -> int:
+    """Count files with ``ext`` in a flat or (up to 2-level) sharded directory."""
+    if not os.path.exists(base_dir):
+        return 0
+    total = 0
+    try:
+        with os.scandir(base_dir) as it:
+            for entry in it:
+                if entry.is_file() and entry.name.endswith(ext):
+                    total += 1
+                elif entry.is_dir():
+                    try:
+                        with os.scandir(entry.path) as sub_it:
+                            for sub_entry in sub_it:
+                                if sub_entry.is_file() and sub_entry.name.endswith(ext):
+                                    total += 1
+                                elif sub_entry.is_dir():
+                                    try:
+                                        with os.scandir(sub_entry.path) as slot_it:
+                                            for f in slot_it:
+                                                if f.is_file() and f.name.endswith(ext):
+                                                    total += 1
+                                    except OSError:
+                                        pass
+                    except OSError:
+                        pass
+    except OSError:
+        pass
+    return total
 
 
-def count_extracted_files() -> Tuple[int, int]:
-    """
-    Count available FITS and PNG files in DATA_DIR.
-    Checks DB index first if available, otherwise fast-scans flat or sharded directory.
-    """
-    if os.path.exists(DB_PATH):
-        try:
-            conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute("PRAGMA table_info(target_summary)")
-            cols = {row[1] for row in cur.fetchall()}
-            tbl = "target_summary"
-            if "fits_path" in cols and "png_path" in cols:
-                cur.execute(f"SELECT COUNT(fits_path), COUNT(png_path) FROM {tbl} WHERE fits_path IS NOT NULL OR png_path IS NOT NULL")
-                row = cur.fetchone()
+class Dataset:
+    """One viewable dataset: database + extracted_targets directory, with its own caches."""
+
+    def __init__(self, ds_id: str, name: str, db_path: str, data_dir: str,
+                 password: Optional[str] = None, description: str = ""):
+        self.id = ds_id
+        self.name = name
+        self.description = description
+        self.password = password or None
+        self.db_path = db_path
+        self.data_dir = data_dir
+        self.fits_dir = os.path.join(data_dir, "fits")
+        self.png_dir = os.path.join(data_dir, "png")
+        self.cutout_cache_dir = os.path.join(data_dir, "cutout_cache")
+
+        # In-memory file index caches for O(1) lookups of flat directories without disk/NFS I/O
+        self.fits_file_set: Set[str] = set()
+        self.png_file_set: Set[str] = set()
+        self.files_indexed = False
+
+        self.stats_cache: Optional[Dict[str, Any]] = None
+
+        # Full-sky coordinates cache
+        self.sky_lock = threading.Lock()
+        self.sky_gzip_bytes: Optional[bytes] = None
+        self.sky_json_bytes: Optional[bytes] = None
+        self.sky_etag: Optional[str] = None
+
+        # Spectral lines catalog cache
+        self.lines_lock = threading.Lock()
+        self.lines_cache: Optional[dict] = None
+        self.lines_db_mtime: float = 0.0
+
+        self._ready = False
+        self._ready_lock = threading.Lock()
+
+    def same_source(self, other: "Dataset") -> bool:
+        return self.db_path == other.db_path and self.data_dir == other.data_dir
+
+    def ensure_ready(self):
+        """Index files, prepare cutout cache and pre-warm caches on first use."""
+        if self._ready:
+            return
+        with self._ready_lock:
+            if self._ready:
+                return
+            if os.path.exists(self.data_dir):
+                try:
+                    os.makedirs(self.cutout_cache_dir, exist_ok=True)
+                except OSError:
+                    pass
+            index_extracted_files(self)
+            cleanup_blank_cutout_cache(self)
+            if os.path.exists(self.db_path):
+                threading.Thread(target=load_or_build_master_sky_cache, args=(self,), daemon=True).start()
+                threading.Thread(target=load_or_build_spectral_lines_cache, args=(self,), daemon=True).start()
+            self._ready = True
+
+    def count_extracted_files(self) -> Tuple[int, int]:
+        """Count available FITS and PNG files (from the DB index if available, otherwise by scanning)."""
+        if os.path.exists(self.db_path):
+            try:
+                conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+                cur = conn.cursor()
+                cur.execute("PRAGMA table_info(target_summary)")
+                cols = {row[1] for row in cur.fetchall()}
+                if "fits_path" in cols and "png_path" in cols:
+                    cur.execute("SELECT COUNT(fits_path), COUNT(png_path) FROM target_summary "
+                                "WHERE fits_path IS NOT NULL OR png_path IS NOT NULL")
+                    row = cur.fetchone()
+                    conn.close()
+                    if row and (row[0] > 0 or row[1] > 0):
+                        return int(row[0]), int(row[1])
                 conn.close()
-                if row and (row[0] > 0 or row[1] > 0):
-                    return int(row[0]), int(row[1])
-            conn.close()
-        except Exception:
-            pass
-
-    def scan_dir(base_dir: str, ext: str) -> int:
-        if not os.path.exists(base_dir):
-            return 0
-        total = 0
-        try:
-            with os.scandir(base_dir) as it:
-                for entry in it:
-                    if entry.is_file() and entry.name.endswith(ext):
-                        total += 1
-                    elif entry.is_dir():
-                        try:
-                            with os.scandir(entry.path) as sub_it:
-                                for sub_entry in sub_it:
-                                    if sub_entry.is_file() and sub_entry.name.endswith(ext):
-                                        total += 1
-                                    elif sub_entry.is_dir():
-                                        try:
-                                            with os.scandir(sub_entry.path) as slot_it:
-                                                for f in slot_it:
-                                                    if f.is_file() and f.name.endswith(ext):
-                                                        total += 1
-                                        except OSError:
-                                            pass
-                        except OSError:
-                            pass
-        except OSError:
-            pass
-        return total
-
-    return scan_dir(FITS_DIR, ".fits"), scan_dir(PNG_DIR, ".png")
+            except Exception:
+                pass
+        return _scan_dir_count(self.fits_dir, ".fits"), _scan_dir_count(self.png_dir, ".png")
 
 
-def index_extracted_files(force: bool = False):
+def index_extracted_files(ds: Dataset, force: bool = False):
     """Index FITS and PNG filenames if flat directory, or detect sharded structure."""
-    global FITS_FILE_SET, PNG_FILE_SET, _FILES_INDEXED
-    if _FILES_INDEXED and not force:
+    if ds.files_indexed and not force:
         return
 
     t0 = time.time()
@@ -173,35 +222,35 @@ def index_extracted_files(force: bool = False):
     png_count = 0
     is_sharded = False
 
-    if os.path.exists(FITS_DIR):
+    if os.path.exists(ds.fits_dir):
         try:
-            entries = os.listdir(FITS_DIR)
+            entries = os.listdir(ds.fits_dir)
             fits_files = [f for f in entries if f.endswith(".fits")]
             if fits_files:
-                FITS_FILE_SET = set(fits_files)
-                fits_count = len(FITS_FILE_SET)
-            elif any(os.path.isdir(os.path.join(FITS_DIR, e)) for e in entries):
+                ds.fits_file_set = set(fits_files)
+                fits_count = len(ds.fits_file_set)
+            elif any(os.path.isdir(os.path.join(ds.fits_dir, e)) for e in entries):
                 is_sharded = True
         except Exception as e:
-            print(f"Warning: Failed reading FITS dir {FITS_DIR}: {e}")
+            print(f"Warning: Failed reading FITS dir {ds.fits_dir}: {e}")
 
-    if os.path.exists(PNG_DIR):
+    if os.path.exists(ds.png_dir):
         try:
-            entries = os.listdir(PNG_DIR)
+            entries = os.listdir(ds.png_dir)
             png_files = [p for p in entries if p.endswith(".png")]
             if png_files:
-                PNG_FILE_SET = set(png_files)
-                png_count = len(PNG_FILE_SET)
-            elif any(os.path.isdir(os.path.join(PNG_DIR, e)) for e in entries):
+                ds.png_file_set = set(png_files)
+                png_count = len(ds.png_file_set)
+            elif any(os.path.isdir(os.path.join(ds.png_dir, e)) for e in entries):
                 is_sharded = True
         except Exception as e:
-            print(f"Warning: Failed reading PNG dir {PNG_DIR}: {e}")
+            print(f"Warning: Failed reading PNG dir {ds.png_dir}: {e}")
 
-    _FILES_INDEXED = True
+    ds.files_indexed = True
     if is_sharded:
         pass
     elif fits_count > 0 or png_count > 0:
-        print(f"  ⚡ In-memory flat file index built in {time.time()-t0:.3f}s: {fits_count:,} FITS, {png_count:,} PNG files.")
+        print(f"  ⚡ [{ds.id}] In-memory flat file index built in {time.time()-t0:.3f}s: {fits_count:,} FITS, {png_count:,} PNG files.")
 
 
 def is_blank_or_out_of_coverage(data: bytes) -> bool:
@@ -245,12 +294,12 @@ def is_blank_or_out_of_coverage(data: bytes) -> bool:
     return False
 
 
-def cleanup_blank_cutout_cache():
-    """Scan cutout_cache directory and purge previously cached blank/dummy frames."""
-    if not os.path.exists(CUTOUT_CACHE_DIR):
+def cleanup_blank_cutout_cache(ds: Dataset):
+    """Scan the dataset's cutout_cache directory and purge previously cached blank/dummy frames."""
+    if not os.path.exists(ds.cutout_cache_dir):
         return
     removed = 0
-    for img_path in glob.glob(os.path.join(CUTOUT_CACHE_DIR, "*.jpg")):
+    for img_path in glob.glob(os.path.join(ds.cutout_cache_dir, "*.jpg")):
         try:
             with open(img_path, "rb") as f:
                 data = f.read()
@@ -264,74 +313,191 @@ def cleanup_blank_cutout_cache():
         except Exception:
             pass
     if removed > 0:
-        print(f"  🧹 Cleaned up {removed} blank/dummy cutout image(s) from cache.")
+        print(f"  🧹 [{ds.id}] Cleaned up {removed} blank/dummy cutout image(s) from cache.")
 
 
-def configure_paths(
-    target_dir: Optional[str] = None,
-    db_path: Optional[str] = None,
-    data_dir: Optional[str] = None,
-):
-    """Configure global path variables, cache directories, and build file index."""
-    global DB_PATH, DATA_DIR, FITS_DIR, PNG_DIR, CUTOUT_CACHE_DIR, _FILES_INDEXED, _DB_HAS_FILE_COLS
-    old_db = DB_PATH
-    DB_PATH, DATA_DIR = resolve_paths(target_dir=target_dir, db_path=db_path, data_dir=data_dir)
-    FITS_DIR = os.path.join(DATA_DIR, "fits")
-    PNG_DIR = os.path.join(DATA_DIR, "png")
-    CUTOUT_CACHE_DIR = os.path.join(DATA_DIR, "cutout_cache")
-    if os.path.exists(DATA_DIR):
+# -----------------------------------------------------------------------------
+# Dataset Registry (datasets.toml) & Per-Browser Dataset Sessions
+# -----------------------------------------------------------------------------
+DEFAULT_CONFIG_PATH = os.path.join(BASE_DIR, "datasets.toml")
+SESSION_COOKIE = "pfs_viewer_session"
+
+
+def _slugify(text: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", text.strip()).strip("-")
+    return slug or "dataset"
+
+
+class DatasetRegistry:
+    """Datasets from the config file (reloaded when it changes) plus an optional command-line dataset."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.datasets: "OrderedDict[str, Dataset]" = OrderedDict()
+        self.config_path: Optional[str] = None
+        self.config_mtime: Optional[float] = None
+        self.cli_dataset: Optional[Dataset] = None
+        self.secret_key: bytes = secrets.token_bytes(32)
+        self.session_max_age = 7 * 24 * 3600
+
+    def configure(self, config_path: Optional[str], cli_dataset: Optional[Dataset]):
+        with self.lock:
+            self.config_path = os.path.abspath(config_path) if config_path else None
+            self.config_mtime = None
+            self.cli_dataset = cli_dataset
+            self._load_locked()
+
+    def _read_config(self) -> Tuple[List[Dataset], dict]:
+        with open(self.config_path, "rb") as f:
+            conf = tomllib.load(f)
+        entries = conf.get("datasets") or conf.get("dataset") or []
+        result: List[Dataset] = []
+        seen: Set[str] = set()
+        for i, e in enumerate(entries, 1):
+            name = str(e.get("name") or e.get("id") or f"Dataset {i}")
+            ds_id = _slugify(str(e.get("id") or name))
+            if ds_id in seen:
+                print(f"  ⚠️ datasets config: duplicate id '{ds_id}' ignored ({name})")
+                continue
+            if not (e.get("dir") or e.get("db")):
+                print(f"  ⚠️ datasets config: '{ds_id}' has neither 'dir' nor 'db'; ignored")
+                continue
+            db_path, data_dir = resolve_paths(target_dir=e.get("dir"), db_path=e.get("db"),
+                                              data_dir=e.get("data_dir"), use_env=False)
+            password = e.get("password")
+            result.append(Dataset(ds_id, name, db_path, data_dir,
+                                  password=str(password) if password else None,
+                                  description=str(e.get("description") or "")))
+            seen.add(ds_id)
+        return result, conf
+
+    def _load_locked(self):
+        new_list: List[Dataset] = []
+        if self.cli_dataset is not None:
+            new_list.append(self.cli_dataset)
+        if self.config_path and os.path.exists(self.config_path):
+            try:
+                mtime = os.path.getmtime(self.config_path)
+                conf_list, conf = self._read_config()
+                self.config_mtime = mtime
+                if conf.get("secret_key"):
+                    self.secret_key = hashlib.sha256(str(conf["secret_key"]).encode("utf-8")).digest()
+                if conf.get("session_days"):
+                    self.session_max_age = int(float(conf["session_days"]) * 24 * 3600)
+                cli_id = self.cli_dataset.id if self.cli_dataset else None
+                new_list.extend(d for d in conf_list if d.id != cli_id)
+            except Exception as e:
+                print(f"  ⚠️ Failed to load datasets config {self.config_path}: {e}")
+                if self.datasets:
+                    return  # keep the previous datasets on a broken config
+        elif self.config_path:
+            print(f"  ⚠️ Datasets config not found: {self.config_path}")
+
+        # Keep existing Dataset objects (and their caches) when the source paths are unchanged
+        merged: "OrderedDict[str, Dataset]" = OrderedDict()
+        for d in new_list:
+            old = self.datasets.get(d.id)
+            if old is not None and old.same_source(d):
+                old.name, old.description, old.password = d.name, d.description, d.password
+                d = old
+            merged[d.id] = d
+        self.datasets = merged
+
+    def reload_if_changed(self):
+        if not self.config_path:
+            return
         try:
-            os.makedirs(CUTOUT_CACHE_DIR, exist_ok=True)
+            mtime = os.path.getmtime(self.config_path)
         except OSError:
-            pass
-    _FILES_INDEXED = False
-    _DB_HAS_FILE_COLS = None
-    index_extracted_files()
-    cleanup_blank_cutout_cache()
+            return
+        if mtime != self.config_mtime:
+            with self.lock:
+                if mtime != self.config_mtime:
+                    print(f"  🔄 Reloading datasets config: {self.config_path}")
+                    self._load_locked()
 
-    # Clear query cache and pre-warm master sky cache when switching datasets
-    if old_db and old_db != DB_PATH:
-        if "SQL_CACHE" in globals() and SQL_CACHE is not None:
-            SQL_CACHE.clear()
-        if "load_or_build_master_sky_cache" in globals() and os.path.exists(DB_PATH):
-            threading.Thread(
-                target=load_or_build_master_sky_cache,
-                kwargs={"force": False, "db_path": DB_PATH},
-                daemon=True,
-            ).start()
-        if "load_or_build_spectral_lines_cache" in globals() and os.path.exists(DB_PATH):
-            threading.Thread(
-                target=load_or_build_spectral_lines_cache,
-                kwargs={"force": False, "db_path": DB_PATH},
-                daemon=True,
-            ).start()
+    def get(self, ds_id: Optional[str]) -> Optional[Dataset]:
+        return self.datasets.get(ds_id) if ds_id else None
+
+    def all(self) -> List[Dataset]:
+        return list(self.datasets.values())
+
+    def default_open_dataset(self) -> Optional[Dataset]:
+        """The only dataset, if there is exactly one and it has no password (no selection needed)."""
+        if len(self.datasets) == 1:
+            d = next(iter(self.datasets.values()))
+            if not d.password:
+                return d
+        return None
+
+    # --- Signed session cookie: {"ds": current dataset id, "auth": {id: password fingerprint}} ---
+    def _sign(self, data: bytes) -> str:
+        return hmac.new(self.secret_key, data, hashlib.sha256).hexdigest()
+
+    def encode_session(self, session: dict) -> str:
+        data = base64.urlsafe_b64encode(json.dumps(session, separators=(",", ":")).encode("utf-8"))
+        return f"{data.decode('ascii')}.{self._sign(data)}"
+
+    def decode_session(self, value: Optional[str]) -> dict:
+        if not value or "." not in value:
+            return {}
+        data, sig = value.rsplit(".", 1)
+        if not hmac.compare_digest(sig, self._sign(data.encode("ascii"))):
+            return {}
+        try:
+            session = json.loads(base64.urlsafe_b64decode(data.encode("ascii")))
+            return session if isinstance(session, dict) else {}
+        except Exception:
+            return {}
+
+    def password_fingerprint(self, ds: Dataset) -> str:
+        # Changing a dataset's password in the config invalidates existing sessions for it
+        return self._sign(f"{ds.id}\0{ds.password or ''}".encode("utf-8"))[:24]
+
+    def is_authorized(self, ds: Dataset, session: dict) -> bool:
+        if not ds.password:
+            return True
+        auth = session.get("auth") or {}
+        fp = auth.get(ds.id) if isinstance(auth, dict) else None
+        return isinstance(fp, str) and hmac.compare_digest(fp, self.password_fingerprint(ds))
 
 
-# Initialize defaults
-configure_paths()
+REGISTRY = DatasetRegistry()
+_CURRENT_DATASET: contextvars.ContextVar[Optional[Dataset]] = contextvars.ContextVar("pfs_current_dataset", default=None)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Pre-warm master sky cache and spectral lines cache in background thread when server starts
-    if os.path.exists(DB_PATH):
-        threading.Thread(
-            target=load_or_build_master_sky_cache,
-            kwargs={"db_path": DB_PATH},
-            daemon=True,
-        ).start()
-        threading.Thread(
-            target=load_or_build_spectral_lines_cache,
-            kwargs={"db_path": DB_PATH},
-            daemon=True,
-        ).start()
-    yield
+
+def cur_ds() -> Dataset:
+    """Dataset selected for the current request (set by dataset_middleware)."""
+    ds = _CURRENT_DATASET.get()
+    if ds is None:
+        raise HTTPException(status_code=401, detail="No dataset selected")
+    return ds
+
+
+def init_registry_from_env():
+    """Configure datasets from environment variables (also used by uvicorn --reload workers).
+
+    PFS_VIEWER_CONFIG: datasets config file (default: datasets.toml next to app.py if present)
+    PFS_DATA_ROOT / PFS_DB_PATH / PFS_DATA_DIR: an additional command-line dataset
+    """
+    config_path = os.getenv("PFS_VIEWER_CONFIG") or (DEFAULT_CONFIG_PATH if os.path.exists(DEFAULT_CONFIG_PATH) else None)
+    has_cli = any(os.getenv(k) for k in ("PFS_DATA_ROOT", "PFS_DIR", "PFS_DATASET_DIR", "PFS_DB_PATH", "PFS_DATA_DIR"))
+    cli_dataset = None
+    if has_cli or not config_path:
+        db_path, data_dir = resolve_paths()
+        base = os.path.dirname(db_path) if os.path.basename(data_dir) == "extracted_targets" else data_dir
+        name = os.getenv("PFS_DATASET_NAME") or os.path.basename(os.path.normpath(base)) or "default"
+        cli_dataset = Dataset("default", name, db_path, data_dir)
+    REGISTRY.configure(config_path, cli_dataset)
+
+
+init_registry_from_env()
 
 
 app = FastAPI(
     title="PFS Target & Spectrum Viewer",
     description="Interactive Web Dashboard for PFS Targets & Coadded Spectra",
     version="1.0.0",
-    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -395,30 +561,35 @@ def set_query_timeout(conn: sqlite3.Connection, timeout_sec: float = 6.0):
 
 def get_db():
     """Connect to SQLite database in read-only mode with custom functions registered."""
-    if not os.path.exists(DB_PATH):
-        raise HTTPException(status_code=500, detail=f"Database file not found at {DB_PATH}")
-    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    db_path = cur_ds().db_path
+    if not os.path.exists(db_path):
+        raise HTTPException(status_code=500, detail=f"Database file not found at {db_path}")
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     register_sql_functions(conn)
     return conn
 
 
-_DB_HAS_FILE_COLS: Optional[bool] = None
+_DB_HAS_FILE_COLS: Dict[str, bool] = {}
 
 
 def check_db_file_columns(conn: sqlite3.Connection) -> bool:
-    """Check if target_summary has has_fits, fits_path, has_png, png_path columns."""
-    global _DB_HAS_FILE_COLS
-    if _DB_HAS_FILE_COLS is not None:
-        return _DB_HAS_FILE_COLS
+    """Check if target_summary has has_fits, fits_path, has_png, png_path columns (cached per database file)."""
+    try:
+        db_file = conn.execute("PRAGMA database_list").fetchone()[2] or ""
+    except Exception:
+        db_file = ""
+    if db_file in _DB_HAS_FILE_COLS:
+        return _DB_HAS_FILE_COLS[db_file]
     try:
         cur = conn.cursor()
         cur.execute("PRAGMA table_info(target_summary)")
         cols = {row[1] for row in cur.fetchall()}
-        _DB_HAS_FILE_COLS = "has_fits" in cols and "fits_path" in cols
+        result = "has_fits" in cols and "fits_path" in cols
     except Exception:
-        _DB_HAS_FILE_COLS = False
-    return _DB_HAS_FILE_COLS
+        result = False
+    _DB_HAS_FILE_COLS[db_file] = result
+    return result
 
 
 def get_summary_table(conn: sqlite3.Connection) -> str:
@@ -450,16 +621,17 @@ def find_files(
     2. Sharded location: fits/{catId}/{slot:03d}/pfsObject_{base}.fits
     3. Flat location: fits/pfsObject_{base}.fits (checked via in-memory set)
     """
+    ds = cur_ds()
     fits_path = None
     png_path = None
 
     # 1. Use known DB paths if provided and existing
     if known_fits_path:
-        p = os.path.join(DATA_DIR, known_fits_path) if not os.path.isabs(known_fits_path) else known_fits_path
+        p = os.path.join(ds.data_dir, known_fits_path) if not os.path.isabs(known_fits_path) else known_fits_path
         if os.path.exists(p):
             fits_path = p
     if known_png_path:
-        p = os.path.join(DATA_DIR, known_png_path) if not os.path.isabs(known_png_path) else known_png_path
+        p = os.path.join(ds.data_dir, known_png_path) if not os.path.isabs(known_png_path) else known_png_path
         if os.path.exists(p):
             png_path = p
 
@@ -482,7 +654,7 @@ def find_files(
 
     # 2. Check sharded location on disk (2-level catId/slot/ and 1-level catId/)
     if not fits_path:
-        shard_fits_dir = os.path.join(FITS_DIR, shard_sub)
+        shard_fits_dir = os.path.join(ds.fits_dir, shard_sub)
         for base in candidates_base:
             fn = f"pfsObject_{base}.fits"
             p = os.path.join(shard_fits_dir, fn)
@@ -490,7 +662,7 @@ def find_files(
                 fits_path = p
                 break
         if not fits_path:
-            cat_fits_dir = os.path.join(FITS_DIR, str(cat_id))
+            cat_fits_dir = os.path.join(ds.fits_dir, str(cat_id))
             for base in candidates_base:
                 fn = f"pfsObject_{base}.fits"
                 p = os.path.join(cat_fits_dir, fn)
@@ -499,7 +671,7 @@ def find_files(
                     break
 
     if not png_path:
-        shard_png_dir = os.path.join(PNG_DIR, shard_sub)
+        shard_png_dir = os.path.join(ds.png_dir, shard_sub)
         for base in candidates_base:
             pn = f"spec_{base}.png"
             p = os.path.join(shard_png_dir, pn)
@@ -507,7 +679,7 @@ def find_files(
                 png_path = p
                 break
         if not png_path:
-            cat_png_dir = os.path.join(PNG_DIR, str(cat_id))
+            cat_png_dir = os.path.join(ds.png_dir, str(cat_id))
             for base in candidates_base:
                 pn = f"spec_{base}.png"
                 p = os.path.join(cat_png_dir, pn)
@@ -519,21 +691,21 @@ def find_files(
         return fits_path, png_path
 
     # 3. Fallback to flat directory via in-memory set
-    if not _FILES_INDEXED:
-        index_extracted_files()
+    if not ds.files_indexed:
+        index_extracted_files(ds)
 
     if not fits_path:
         for base in candidates_base:
             fn = f"pfsObject_{base}.fits"
-            if fn in FITS_FILE_SET:
-                fits_path = os.path.join(FITS_DIR, fn)
+            if fn in ds.fits_file_set:
+                fits_path = os.path.join(ds.fits_dir, fn)
                 break
 
     if not png_path:
         for base in candidates_base:
             pn = f"spec_{base}.png"
-            if pn in PNG_FILE_SET:
-                png_path = os.path.join(PNG_DIR, pn)
+            if pn in ds.png_file_set:
+                png_path = os.path.join(ds.png_dir, pn)
                 break
 
     return fits_path, png_path
@@ -557,16 +729,9 @@ def sanitize_val(v: Any) -> Any:
 # -----------------------------------------------------------------------------
 # Precomputed Full-Sky Celestial Coordinates In-Memory & Disk Cache
 # -----------------------------------------------------------------------------
-_CURRENT_CACHED_DB_PATH: Optional[str] = None
-_MASTER_SKY_LOCK = threading.Lock()
-_MASTER_SKY_GZIP_BYTES: Optional[bytes] = None
-_MASTER_SKY_JSON_BYTES: Optional[bytes] = None
-_MASTER_SKY_ETAG: Optional[str] = None
-
-
 def get_sky_cache_file_path(db_path: Optional[str] = None) -> str:
     """Return path to persistent disk cache for full sky celestial coordinates for given database."""
-    target_db = db_path or DB_PATH
+    target_db = db_path
     if not target_db:
         base_dir = DEFAULT_BASE_DATA_DIR
         prefix = "pfs_metadata"
@@ -577,29 +742,23 @@ def get_sky_cache_file_path(db_path: Optional[str] = None) -> str:
     return os.path.join(base_dir, f".{prefix}_sky_cache.json.gz")
 
 
-def load_or_build_master_sky_cache(force: bool = False, db_path: Optional[str] = None) -> Tuple[Optional[bytes], Optional[bytes], Optional[str]]:
+def load_or_build_master_sky_cache(ds: Dataset, force: bool = False) -> Tuple[Optional[bytes], Optional[bytes], Optional[str]]:
     """
     Ensure the full celestial sky coordinates are cached in memory (both gzip and raw json bytes)
-    for the currently active database (DB_PATH or specified db_path).
+    for the database of dataset ``ds``.
     1. Loads from persistent .{dbname}_sky_cache.json.gz (or legacy .sky_positions_cache.json.gz) in ~2ms.
     2. Otherwise queries the active SQLite database, serializes, compresses, and saves disk cache.
     """
-    global _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG, _CURRENT_CACHED_DB_PATH
-
-    active_db = os.path.abspath(db_path or DB_PATH) if (db_path or DB_PATH) else ""
+    active_db = os.path.abspath(ds.db_path) if ds.db_path else ""
     if not active_db or not os.path.exists(active_db):
         return None, None, None
 
-    # If active database changed since last cache load, memory cache must be updated
-    db_changed = (_CURRENT_CACHED_DB_PATH != active_db)
+    if not force and ds.sky_gzip_bytes is not None and ds.sky_json_bytes is not None:
+        return ds.sky_gzip_bytes, ds.sky_json_bytes, ds.sky_etag
 
-    if not force and not db_changed and _MASTER_SKY_GZIP_BYTES is not None and _MASTER_SKY_JSON_BYTES is not None:
-        return _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG
-
-    with _MASTER_SKY_LOCK:
-        db_changed = (_CURRENT_CACHED_DB_PATH != active_db)
-        if not force and not db_changed and _MASTER_SKY_GZIP_BYTES is not None and _MASTER_SKY_JSON_BYTES is not None:
-            return _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG
+    with ds.sky_lock:
+        if not force and ds.sky_gzip_bytes is not None and ds.sky_json_bytes is not None:
+            return ds.sky_gzip_bytes, ds.sky_json_bytes, ds.sky_etag
 
         cache_file = get_sky_cache_file_path(active_db)
         legacy_cache_file = os.path.join(os.path.dirname(active_db), ".sky_positions_cache.json.gz")
@@ -615,12 +774,11 @@ def load_or_build_master_sky_cache(force: bool = False, db_path: Optional[str] =
                     gz_data = f.read()
                 raw_data = gzip.decompress(gz_data)
                 etag = f'W/"sky-{len(gz_data)}-{int(db_mtime)}"'
-                _MASTER_SKY_GZIP_BYTES = gz_data
-                _MASTER_SKY_JSON_BYTES = raw_data
-                _MASTER_SKY_ETAG = etag
-                _CURRENT_CACHED_DB_PATH = active_db
+                ds.sky_gzip_bytes = gz_data
+                ds.sky_json_bytes = raw_data
+                ds.sky_etag = etag
                 print(f"  ⚡ Loaded master sky coordinates cache ({len(gz_data)/1024/1024:.2f} MB gzip) for {active_db} in {(time.time()-t0)*1000:.1f} ms")
-                return _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG
+                return ds.sky_gzip_bytes, ds.sky_json_bytes, ds.sky_etag
             except Exception as e:
                 print(f"Warning: Failed reading sky disk cache: {e}. Rebuilding from database...")
 
@@ -664,10 +822,9 @@ def load_or_build_master_sky_cache(force: bool = False, db_path: Optional[str] =
             gz_bytes = gzip.compress(raw_bytes, compresslevel=6)
             etag = f'W/"sky-{len(gz_bytes)}-{int(db_mtime)}"'
 
-            _MASTER_SKY_GZIP_BYTES = gz_bytes
-            _MASTER_SKY_JSON_BYTES = raw_bytes
-            _MASTER_SKY_ETAG = etag
-            _CURRENT_CACHED_DB_PATH = active_db
+            ds.sky_gzip_bytes = gz_bytes
+            ds.sky_json_bytes = raw_bytes
+            ds.sky_etag = etag
 
             try:
                 with open(cache_file, "wb") as f:
@@ -676,7 +833,7 @@ def load_or_build_master_sky_cache(force: bool = False, db_path: Optional[str] =
                 print(f"Warning: Could not save sky disk cache: {e}")
 
             print(f"  ⚡ Built master sky coordinates cache ({len(results):,} targets, {len(gz_bytes)/1024/1024:.2f} MB gzip) for {active_db} in {time.time()-t0:.2f}s")
-            return _MASTER_SKY_GZIP_BYTES, _MASTER_SKY_JSON_BYTES, _MASTER_SKY_ETAG
+            return ds.sky_gzip_bytes, ds.sky_json_bytes, ds.sky_etag
         except Exception as e:
             print(f"Error building master sky coordinates cache for {active_db}: {e}")
             return None, None, None
@@ -685,18 +842,142 @@ def load_or_build_master_sky_cache(force: bool = False, db_path: Optional[str] =
 # -----------------------------------------------------------------------------
 # Frontend Route
 # -----------------------------------------------------------------------------
+PUBLIC_PATHS = {"/datasets", "/api/datasets", "/api/datasets/select", "/favicon.ico"}
+
+
+@app.middleware("http")
+async def dataset_middleware(request: Request, call_next):
+    """Select the dataset for this request and check that the browser is authorized for it.
+
+    Dataset id priority: X-PFS-Dataset header (fetch calls) > ?ds= query (images/links, page URL)
+    > the browser's current dataset in the session cookie. Using the explicit id lets browser tabs
+    showing different datasets coexist.
+    """
+    path = request.url.path
+    if path.startswith("/static/") or path in PUBLIC_PATHS:
+        return await call_next(request)
+
+    REGISTRY.reload_if_changed()
+    session = REGISTRY.decode_session(request.cookies.get(SESSION_COOKIE))
+    ds_id = (request.headers.get("x-pfs-dataset") or request.query_params.get("ds")
+             or session.get("ds"))
+    ds = REGISTRY.get(ds_id)
+    if ds is None and not request.headers.get("x-pfs-dataset") and not request.query_params.get("ds"):
+        ds = REGISTRY.default_open_dataset()
+
+    if ds is None or not REGISTRY.is_authorized(ds, session):
+        if path == "/":
+            return RedirectResponse("/datasets", status_code=303)
+        return JSONResponse(
+            {"detail": "Dataset not selected or not authorized", "code": "dataset_required"},
+            status_code=401,
+        )
+
+    if not ds._ready:
+        await run_in_threadpool(ds.ensure_ready)
+    token = _CURRENT_DATASET.set(ds)
+    try:
+        response = await call_next(request)
+    finally:
+        _CURRENT_DATASET.reset(token)
+
+    # Opening the dashboard makes this the browser's current dataset
+    if path == "/" and session.get("ds") != ds.id:
+        session["ds"] = ds.id
+        set_session_cookie(response, session)
+    return response
+
+
+def set_session_cookie(response: Response, session: dict):
+    response.set_cookie(
+        SESSION_COOKIE,
+        REGISTRY.encode_session(session),
+        max_age=REGISTRY.session_max_age,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+
+def dataset_listing(session: dict) -> List[dict]:
+    current = session.get("ds")
+    return [
+        {
+            "id": d.id,
+            "name": d.name,
+            "description": d.description,
+            "locked": bool(d.password),
+            "authorized": REGISTRY.is_authorized(d, session),
+            "current": d.id == current,
+        }
+        for d in REGISTRY.all()
+    ]
+
+
 @app.get("/", response_class=HTMLResponse)
 async def serve_dashboard(request: Request):
-    """Render the main dashboard interface."""
-    return templates.TemplateResponse(request=request, name="index.html")
+    """Render the main dashboard interface for the selected dataset."""
+    ds = cur_ds()
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={
+            "dataset_id": ds.id,
+            "dataset_name": ds.name,
+            "can_switch": len(REGISTRY.all()) > 1 or bool(ds.password),
+        },
+    )
+
+
+@app.get("/datasets", response_class=HTMLResponse)
+async def serve_dataset_selector(request: Request):
+    """Render the dataset selection page."""
+    REGISTRY.reload_if_changed()
+    session = REGISTRY.decode_session(request.cookies.get(SESSION_COOKIE))
+    return templates.TemplateResponse(
+        request=request,
+        name="datasets.html",
+        context={"datasets": dataset_listing(session)},
+    )
+
+
+@app.get("/api/datasets")
+def list_datasets(request: Request):
+    """List configured datasets (names only; paths are not exposed)."""
+    REGISTRY.reload_if_changed()
+    session = REGISTRY.decode_session(request.cookies.get(SESSION_COOKIE))
+    return {"datasets": dataset_listing(session)}
+
+
+class DatasetSelectRequest(BaseModel):
+    id: str
+    password: Optional[str] = None
+
+
+@app.post("/api/datasets/select")
+def select_dataset(req: DatasetSelectRequest, request: Request):
+    """Make a dataset this browser's current dataset, checking its password if it has one."""
+    REGISTRY.reload_if_changed()
+    ds = REGISTRY.get(req.id)
+    if ds is None:
+        raise HTTPException(status_code=404, detail="Unknown dataset")
+    session = REGISTRY.decode_session(request.cookies.get(SESSION_COOKIE))
+    if ds.password and not REGISTRY.is_authorized(ds, session):
+        if not hmac.compare_digest((req.password or "").encode("utf-8"), ds.password.encode("utf-8")):
+            time.sleep(0.5)  # slow down password guessing
+            raise HTTPException(status_code=403, detail="Incorrect password")
+        auth = session.get("auth") if isinstance(session.get("auth"), dict) else {}
+        auth[ds.id] = REGISTRY.password_fingerprint(ds)
+        session["auth"] = auth
+    session["ds"] = ds.id
+    response = JSONResponse({"ok": True, "id": ds.id, "redirect": f"/?ds={urllib.parse.quote(ds.id)}"})
+    set_session_cookie(response, session)
+    return response
 
 
 # -----------------------------------------------------------------------------
 # API Routes
 # -----------------------------------------------------------------------------
-_STATS_CACHE: Optional[Dict[str, Any]] = None
-
-
 def check_has_ml_predictions(conn: sqlite3.Connection) -> Tuple[bool, int]:
     """Check if survey_predictions table exists and has rows."""
     try:
@@ -714,9 +995,9 @@ def check_has_ml_predictions(conn: sqlite3.Connection) -> Tuple[bool, int]:
 @app.get("/api/stats")
 def get_stats(refresh: bool = Query(False, description="Force refresh statistics cache")):
     """Get repository overview statistics (cached in memory for instant response)."""
-    global _STATS_CACHE
-    if _STATS_CACHE is not None and not refresh:
-        return _STATS_CACHE
+    ds = cur_ds()
+    if ds.stats_cache is not None and not refresh:
+        return ds.stats_cache
 
     conn = get_db()
     cur = conn.cursor()
@@ -747,11 +1028,13 @@ def get_stats(refresh: bool = Query(False, description="Force refresh statistics
             "combinations_count": comb_count,
             "has_ml_predictions": has_ml,
             "ml_predictions_count": ml_count,
-            "db_path": DB_PATH,
-            "data_dir": DATA_DIR,
+            "db_path": ds.db_path,
+            "data_dir": ds.data_dir,
+            "dataset_id": ds.id,
+            "dataset_name": ds.name,
             "table_used": tbl,
         }
-        _STATS_CACHE = result
+        ds.stats_cache = result
         return result
     finally:
         conn.close()
@@ -1018,7 +1301,7 @@ def get_sky_positions(
         and (limit is None or limit >= 210000)
     )
     if is_unfiltered:
-        gz_data, raw_data, etag = load_or_build_master_sky_cache(db_path=DB_PATH)
+        gz_data, raw_data, etag = load_or_build_master_sky_cache(cur_ds())
         if etag and request.headers.get("if-none-match") == etag:
             return Response(status_code=304)
 
@@ -1574,8 +1857,9 @@ def get_target_cutout(
     if survey_key != "auto" and survey_key not in SURVEY_HIPS_MAP:
         raise HTTPException(status_code=400, detail=f"Unsupported survey: {survey}")
     cache_prefix = f"cutout_{survey_key}_{ra:.5f}_{dec:+.5f}_{fov:.5f}_{width}x{height}"
-    cache_img = os.path.join(CUTOUT_CACHE_DIR, f"{cache_prefix}.jpg")
-    cache_meta = os.path.join(CUTOUT_CACHE_DIR, f"{cache_prefix}.json")
+    cutout_cache_dir = cur_ds().cutout_cache_dir
+    cache_img = os.path.join(cutout_cache_dir, f"{cache_prefix}.jpg")
+    cache_meta = os.path.join(cutout_cache_dir, f"{cache_prefix}.json")
 
     # 1. Check local cache (with blank detection to prevent serving stale white frames)
     if os.path.exists(cache_img) and os.path.exists(cache_meta):
@@ -2276,36 +2560,29 @@ KNOWN_SPECTRAL_REST_WAVELENGTHS = {
     '[OII]3729': 372.99, '[OI]6301': 630.21, '[SII]6716': 671.83, '[SII]6731': 673.27
 }
 
-_SPECTRAL_LINES_CACHE: Optional[dict] = None
-_SPECTRAL_LINES_DB_MTIME: float = 0.0
-_SPECTRAL_LINES_LOCK = threading.Lock()
-
-
-def load_or_build_spectral_lines_cache(force: bool = False, db_path: Optional[str] = None) -> Optional[dict]:
+def load_or_build_spectral_lines_cache(ds: Dataset, force: bool = False) -> Optional[dict]:
     """
     Ensure the spectral lines catalog is cached and up-to-date with the database.
     - If spectral_lines_cache.json exists and mtime >= db_mtime, load it (<1ms).
     - If DB is newer than cache (or cache is missing or force=True), re-aggregate from DB and save cache.
     """
-    global _SPECTRAL_LINES_CACHE, _SPECTRAL_LINES_DB_MTIME
-
-    active_db = os.path.abspath(db_path or DB_PATH) if (db_path or DB_PATH) else ""
+    active_db = os.path.abspath(ds.db_path) if ds.db_path else ""
     if not active_db or not os.path.exists(active_db):
-        return _SPECTRAL_LINES_CACHE
+        return ds.lines_cache
 
     db_mtime = os.path.getmtime(active_db)
 
     # In-memory fast path: DB hasn't been modified since we cached it
-    if not force and _SPECTRAL_LINES_CACHE is not None and _SPECTRAL_LINES_DB_MTIME >= db_mtime:
-        return _SPECTRAL_LINES_CACHE
+    if not force and ds.lines_cache is not None and ds.lines_db_mtime >= db_mtime:
+        return ds.lines_cache
 
-    with _SPECTRAL_LINES_LOCK:
-        if not force and _SPECTRAL_LINES_CACHE is not None and _SPECTRAL_LINES_DB_MTIME >= db_mtime:
-            return _SPECTRAL_LINES_CACHE
+    with ds.lines_lock:
+        if not force and ds.lines_cache is not None and ds.lines_db_mtime >= db_mtime:
+            return ds.lines_cache
 
         candidate_cache_paths = [
             os.path.join(os.path.dirname(active_db), "spectral_lines_cache.json"),
-            os.path.join(DATA_DIR, "spectral_lines_cache.json"),
+            os.path.join(ds.data_dir, "spectral_lines_cache.json"),
             os.path.join(os.path.dirname(__file__), "..", "extracted_targets", "spectral_lines_cache.json"),
             os.path.join(os.path.dirname(__file__), "..", "spectral_lines_cache.json"),
         ]
@@ -2318,9 +2595,9 @@ def load_or_build_spectral_lines_cache(force: bool = False, db_path: Optional[st
                         with open(p, "r", encoding="utf-8") as f:
                             data = json.load(f)
                             if data.get("lines") and "restWave_nm" in data["lines"][0]:
-                                _SPECTRAL_LINES_CACHE = data
-                                _SPECTRAL_LINES_DB_MTIME = db_mtime
-                                return _SPECTRAL_LINES_CACHE
+                                ds.lines_cache = data
+                                ds.lines_db_mtime = db_mtime
+                                return ds.lines_cache
                     except Exception:
                         pass
 
@@ -2349,11 +2626,11 @@ def load_or_build_spectral_lines_cache(force: bool = False, db_path: Optional[st
                     "restWave_nm": rest_nm,
                     "restWave_A": rest_A,
                 })
-            _SPECTRAL_LINES_CACHE = {
+            ds.lines_cache = {
                 "total_lines": len(lines),
                 "lines": lines,
             }
-            _SPECTRAL_LINES_DB_MTIME = db_mtime
+            ds.lines_db_mtime = db_mtime
             conn.close()
 
             # Save updated cache to disk
@@ -2361,12 +2638,12 @@ def load_or_build_spectral_lines_cache(force: bool = False, db_path: Optional[st
                 if save_p and os.path.dirname(save_p) and os.path.exists(os.path.dirname(save_p)):
                     try:
                         with open(save_p, "w", encoding="utf-8") as f:
-                            json.dump(_SPECTRAL_LINES_CACHE, f, indent=2)
+                            json.dump(ds.lines_cache, f, indent=2)
                     except Exception:
                         pass
 
             print(f"  ⚡ Updated spectral lines catalog cache ({len(lines)} lines) for {active_db}")
-            return _SPECTRAL_LINES_CACHE
+            return ds.lines_cache
         except Exception as e:
             print(f"Warning: Failed to re-aggregate spectral lines from database: {e}")
             # Fallback to existing disk cache if available
@@ -2376,17 +2653,17 @@ def load_or_build_spectral_lines_cache(force: bool = False, db_path: Optional[st
                         with open(p, "r", encoding="utf-8") as f:
                             data = json.load(f)
                             if data.get("lines") and "restWave_nm" in data["lines"][0]:
-                                _SPECTRAL_LINES_CACHE = data
-                                return _SPECTRAL_LINES_CACHE
+                                ds.lines_cache = data
+                                return ds.lines_cache
                     except Exception:
                         pass
-            return _SPECTRAL_LINES_CACHE
+            return ds.lines_cache
 
 
 @app.get("/api/sql/lines")
 def get_spectral_lines():
     """Retrieve metadata catalog of measured spectral lines in line_measurements with rest-frame wavelengths."""
-    catalog = load_or_build_spectral_lines_cache(db_path=DB_PATH)
+    catalog = load_or_build_spectral_lines_cache(cur_ds())
     if catalog is not None:
         return catalog
     raise HTTPException(status_code=500, detail="Failed to load spectral lines catalog")
@@ -2443,7 +2720,8 @@ def execute_sql_query(req: SqlQueryRequest):
     offset = (page - 1) * limit
 
     has_limit = has_top_level_limit(optimized_sql)
-    cache_key_source = strip_trailing_order_by(optimized_sql)
+    # Cache key is per dataset (database file) + normalized SQL
+    cache_key_source = f"{cur_ds().db_path}\n" + strip_trailing_order_by(optimized_sql)
 
     # For queries without top-level LIMIT, extract user-written ORDER BY if client did not supply sort_by
     initial_sort = extract_trailing_order_by(optimized_sql) if not has_limit else None
@@ -2618,12 +2896,20 @@ Examples:
 
   # 4. Explicitly specify database and extracted_targets directory separately:
   python app.py --db /path/to/pfs_metadata.sqlite3 --data-dir /path/to/extracted_targets
+
+  # 5. Serve several datasets selectable in the browser (optionally password-protected):
+  python app.py --config datasets.toml
+  ./run_viewer.sh --config datasets.toml
+  (datasets.toml next to app.py is used automatically; see datasets.example.toml)
 """
     )
     parser.add_argument("target_dir", nargs="?", default=None,
                         help="Directory containing pfs_metadata.sqlite3 and extracted_targets/ (optional)")
     parser.add_argument("-d", "--dir", "--dataset-dir", dest="opt_dir", default=None,
                         help="Directory containing pfs_metadata.sqlite3 and extracted_targets/")
+    parser.add_argument("-c", "--config", default=None,
+                        help=f"Datasets config file (TOML) listing selectable datasets "
+                             f"(default: {DEFAULT_CONFIG_PATH} if it exists)")
     parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8090, help="Port to listen on (default: 8090)")
     parser.add_argument("--db", default=None, help="Explicit path to pfs_metadata.sqlite3")
@@ -2631,31 +2917,45 @@ Examples:
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload on code changes")
     args = parser.parse_args()
 
+    # Pass settings through environment variables so that --reload workers see them too
     chosen_dir = args.opt_dir or args.target_dir
-    configure_paths(target_dir=chosen_dir, db_path=args.db, data_dir=args.data_dir)
-
-    # Status check for logging
-    if os.path.exists(DB_PATH):
-        db_size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
-        db_size_str = f"{db_size_mb / 1024:.2f} GB" if db_size_mb >= 1024 else f"{db_size_mb:.1f} MB"
-        db_status = f"✅ Found ({db_size_str})"
-    else:
-        db_status = "⚠️  NOT FOUND"
-
-    if os.path.exists(DATA_DIR):
-        fits_count, png_count = count_extracted_files()
-        data_status = f"✅ Found ({fits_count:,} FITS, {png_count:,} PNG)"
-    else:
-        data_status = "⚠️  NOT FOUND"
+    if args.config:
+        os.environ["PFS_VIEWER_CONFIG"] = os.path.abspath(os.path.expanduser(args.config))
+    if chosen_dir:
+        os.environ["PFS_DATA_ROOT"] = os.path.abspath(os.path.expanduser(chosen_dir))
+    if args.db:
+        os.environ["PFS_DB_PATH"] = os.path.abspath(os.path.expanduser(args.db))
+    if args.data_dir:
+        os.environ["PFS_DATA_DIR"] = os.path.abspath(os.path.expanduser(args.data_dir))
+    init_registry_from_env()
 
     print("=" * 70)
     print("  🌌 Starting PFS Target & Spectrum Viewer")
-    if chosen_dir:
-        print(f"  📍 Specified Dir: {os.path.abspath(chosen_dir)}")
-    print(f"  📂 Database:      {DB_PATH} [{db_status}]")
-    print(f"  📁 Data Dir:      {DATA_DIR} [{data_status}]")
+    if REGISTRY.config_path:
+        print(f"  ⚙️  Config:        {REGISTRY.config_path}")
+    missing = False
+    for d in REGISTRY.all():
+        if os.path.exists(d.db_path):
+            db_size_mb = os.path.getsize(d.db_path) / (1024 * 1024)
+            db_size_str = f"{db_size_mb / 1024:.2f} GB" if db_size_mb >= 1024 else f"{db_size_mb:.1f} MB"
+            db_status = f"✅ Found ({db_size_str})"
+        else:
+            db_status = "⚠️  NOT FOUND"
+            missing = True
+        if os.path.exists(d.data_dir):
+            fits_count, png_count = d.count_extracted_files()
+            data_status = f"✅ Found ({fits_count:,} FITS, {png_count:,} PNG)"
+        else:
+            data_status = "⚠️  NOT FOUND"
+            missing = True
+        lock = " 🔒" if d.password else ""
+        print(f"  📚 Dataset [{d.id}] {d.name}{lock}")
+        print(f"     📂 Database:  {d.db_path} [{db_status}]")
+        print(f"     📁 Data Dir:  {d.data_dir} [{data_status}]")
+    if not REGISTRY.all():
+        print("  ⚠️  No datasets configured.")
     print(f"  🌐 URL:           http://{args.host}:{args.port}")
-    if not os.path.exists(DB_PATH) or not os.path.exists(DATA_DIR):
+    if missing:
         print("-" * 70)
         print("  ⚠️  Notice: One or more data targets were not found.")
         print("     Please ensure the directory contains 'pfs_metadata.sqlite3'")

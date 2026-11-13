@@ -102,6 +102,42 @@ body {
   color: var(--text-secondary);
 }
 
+/* Current dataset indicator & switch button */
+.dataset-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: 1rem;
+  padding: 0.3rem 0.4rem 0.3rem 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-card);
+  min-width: 0;
+}
+
+.dataset-indicator-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.dataset-indicator-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--accent-cyan);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 22rem;
+}
+
+.dataset-switch-btn {
+  border-radius: 999px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
 .header-stats {
   display: flex;
   gap: 0.6rem;

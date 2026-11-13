@@ -1882,6 +1882,7 @@ AUTO_SURVEY_ORDER = ["hsc_dr3", "hsc_wide", "panstarrs", "dss"]
 # Skip a host for a while after a connection-level failure (timeout, refused,
 # DNS) so that every cutout request does not wait for the full timeout again.
 HOST_RETRY_INTERVAL_SEC = 300
+LEGACYSURVEY_BLANK_RETRIES = 3
 _host_down_until: Dict[str, float] = {}
 _host_down_lock = threading.Lock()
 
@@ -1935,7 +1936,16 @@ def fetch_survey_cutout(survey_key: str, ra: float, dec: float, fov: float, widt
     """Fetch a cutout for one entry of SURVEY_HIPS_MAP."""
     conf = SURVEY_HIPS_MAP[survey_key]
     if conf.get("source") == "legacysurvey":
-        return fetch_legacysurvey_cutout_raw(conf["layer"], ra, dec, fov, width, height)
+        # The Legacy Survey viewer intermittently returns a blank placeholder image even inside the
+        # survey footprint; retry a few times before treating the position as out of coverage.
+        data = None
+        for attempt in range(LEGACYSURVEY_BLANK_RETRIES):
+            if attempt:
+                time.sleep(0.7)
+            data = fetch_legacysurvey_cutout_raw(conf["layer"], ra, dec, fov, width, height)
+            if data is None or not is_blank_or_out_of_coverage(data):
+                break
+        return data
     return fetch_hips_cutout_raw(conf["id"], ra, dec, fov, width, height)
 
 
@@ -1967,9 +1977,12 @@ def get_target_cutout(
         try:
             with open(cache_img, "rb") as f_img:
                 cached_bytes = f_img.read()
-            if not is_blank_or_out_of_coverage(cached_bytes):
-                with open(cache_meta, "r", encoding="utf-8") as f_meta:
-                    meta = json.load(f_meta)
+            with open(cache_meta, "r", encoding="utf-8") as f_meta:
+                meta = json.load(f_meta)
+            # Auto results that fell back from HSC (cached by older versions) may stem from a
+            # temporary HSC failure: re-fetch them instead of serving them forever
+            stale_fallback = survey_key == "auto" and bool(meta.get("is_fallback"))
+            if not stale_fallback and not is_blank_or_out_of_coverage(cached_bytes):
                 return FileResponse(
                     cache_img,
                     media_type="image/jpeg",
@@ -1981,7 +1994,7 @@ def get_target_cutout(
                     },
                 )
             else:
-                # Stale blank cache detected: delete and re-fetch properly
+                # Stale blank / fallback cache detected: delete and re-fetch properly
                 os.remove(cache_img)
                 if os.path.exists(cache_meta):
                     os.remove(cache_meta)
@@ -2014,26 +2027,29 @@ def get_target_cutout(
     if not img_data:
         raise HTTPException(status_code=502, detail="Unable to fetch cutout image from astronomical image services.")
 
-    # 3. Save to cache
-    try:
-        with open(cache_img, "wb") as f:
-            f.write(img_data)
-        with open(cache_meta, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "survey_used": survey_used,
-                    "survey_name": survey_name,
-                    "is_fallback": is_fallback,
-                    "ra": ra,
-                    "dec": dec,
-                    "fov": fov,
-                    "width": width,
-                    "height": height,
-                },
-                f,
-            )
-    except Exception:
-        pass
+    # 3. Save to cache. Fallback results of 'auto' and blank frames may be caused by a temporary
+    # failure of the preferred service, so they are neither cached on disk nor in the browser.
+    cacheable = not (survey_key == "auto" and is_fallback) and not is_blank_or_out_of_coverage(img_data)
+    if cacheable:
+        try:
+            with open(cache_img, "wb") as f:
+                f.write(img_data)
+            with open(cache_meta, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "survey_used": survey_used,
+                        "survey_name": survey_name,
+                        "is_fallback": is_fallback,
+                        "ra": ra,
+                        "dec": dec,
+                        "fov": fov,
+                        "width": width,
+                        "height": height,
+                    },
+                    f,
+                )
+        except Exception:
+            pass
 
     return Response(
         content=img_data,
@@ -2042,7 +2058,7 @@ def get_target_cutout(
             "X-Survey-Used": survey_used,
             "X-Survey-Name": survey_name,
             "X-Is-Fallback": str(is_fallback).lower(),
-            "Cache-Control": "public, max-age=86400",
+            "Cache-Control": "public, max-age=86400" if cacheable else "no-store",
         },
     )
 

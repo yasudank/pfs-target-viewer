@@ -3506,7 +3506,8 @@ async function loadSkyCutout(ra, dec) {
   const aladinUrl = `https://aladin.cds.unistra.fr/AladinLite/?target=${ra.toFixed(6)}%20${dec.toFixed(6)}&fov=${(fovVal * 2).toFixed(4)}&survey=P%2FPanSTARRS%2FDR1%2Fcolor-z-zg-g`;
   if (elements.aladinLinkBtn) elements.aladinLinkBtn.href = aladinUrl;
 
-  const cutoutApiUrl = dsUrl(`/api/targets/cutout?ra=${ra}&dec=${dec}&fov=${fovVal}&width=300&height=300&survey=${surveyVal}`);
+  // cv: cutout response version; bump to bypass browser-cached responses of older server versions
+  const cutoutApiUrl = dsUrl(`/api/targets/cutout?ra=${ra}&dec=${dec}&fov=${fovVal}&width=300&height=300&survey=${surveyVal}&cv=2`);
   if (elements.fullCutoutLinkBtn) elements.fullCutoutLinkBtn.href = cutoutApiUrl;
 
   // FOV indicator

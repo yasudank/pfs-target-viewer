@@ -463,6 +463,12 @@ SELECT *
 FROM target_summary
 WHERE has_fits = 1 AND has_png = 1
 ORDER BY bestRedshift ASC`,
+
+  ob_code_selection: `-- Selection by obCode (SQL LIKE pattern: % matches any string, _ any single character)
+SELECT *
+FROM target_summary
+WHERE obCode LIKE 'rubin_%'
+ORDER BY obCode`,
 };
 
 function setFilterMode(mode) {

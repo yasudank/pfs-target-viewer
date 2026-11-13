@@ -1,0 +1,22 @@
+# fail2ban jail for the PFS Target & Spectrum Viewer.
+# Install: sudo cp jail.d/pfs-viewer.local /etc/fail2ban/jail.d/ ; edit logpath/port below if needed.
+
+[pfs-viewer]
+enabled  = true
+filter   = pfs-viewer
+# Security log written by app.py (default: ~/.local/state/pfs-target-viewer/security.log of the
+# user running the viewer; change with --security-log). Keep it on a local disk: root often
+# cannot read files on NFS mounts.
+logpath  = /home/yasuda/.local/state/pfs-target-viewer/security.log
+backend  = polling
+# Port(s) the viewer listens on
+port     = 8090
+# Ban an address with 5 suspicious requests within 10 minutes for 1 hour;
+# repeat offenders are banned longer each time (up to 1 week).
+maxretry = 5
+findtime = 10m
+bantime  = 1h
+bantime.increment = true
+bantime.maxtime   = 1w
+# Never ban localhost and the local networks
+ignoreip = 127.0.0.1/8 ::1 192.168.0.0/16

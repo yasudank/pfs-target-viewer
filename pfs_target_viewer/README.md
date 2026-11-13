@@ -184,6 +184,7 @@ python app.py [-h] [-d OPT_DIR] [-c CONFIG] [--host HOST] [--port PORT] [--db DB
 - `--port`: Port to listen on (default: `8090`)
 - `--db`: Explicit path to SQLite database (overrides `--dir`)
 - `--data-dir`: Explicit path to `extracted_targets` directory (overrides `--dir`)
+- `--security-log`: Security log for fail2ban (see below; `none` disables)
 
 ---
 
@@ -220,6 +221,44 @@ data_dir = "/path/to/extracted_targets"
 - Passwords are stored in plain text, so `datasets.toml` is git-ignored; mind its file permissions.
 - Without `secret_key`, a random key is generated at each server start, so passwords must be entered again after a restart.
 - A dataset given with `--dir` etc. is listed first, in addition to the config datasets. With a single dataset without a password, the viewer opens directly without the selection page, as before.
+
+
+---
+
+## Blocking Malicious Access (fail2ban)
+
+On a publicly reachable machine, fail2ban can block vulnerability scanners and similar clients at the firewall.
+
+The viewer writes one line per suspicious request, with the client IP, to a security log (default `~/.local/state/pfs-target-viewer/security.log`; change with `--security-log PATH`, disable with `--security-log none`). Keep it on a local disk: fail2ban runs as root, which often cannot read NFS-mounted files.
+
+| event | Meaning | Banned by default |
+|---|---|---|
+| `not_found` | URL the viewer does not have (`/wp-login.php`, `/.env`, ...) | ✅ |
+| `bad_password` | Wrong dataset password | ✅ |
+| `method_not_allowed` | Wrong HTTP method | ✅ |
+| `unauthorized` | API access without selecting a dataset (also legitimate browsers with an expired session) | ❌ (logged only) |
+
+404s for missing spectra/FITS of real targets and browser requests such as `/favicon.ico` are not logged.
+
+### Setup (requires root)
+
+```bash
+sudo apt install fail2ban
+sudo cp fail2ban/filter.d/pfs-viewer.conf /etc/fail2ban/filter.d/
+sudo cp fail2ban/jail.d/pfs-viewer.local  /etc/fail2ban/jail.d/
+sudo vi /etc/fail2ban/jail.d/pfs-viewer.local   # check logpath, port and ignoreip
+sudo systemctl enable --now fail2ban
+
+# Check that the filter matches the log
+sudo fail2ban-regex ~/.local/state/pfs-target-viewer/security.log /etc/fail2ban/filter.d/pfs-viewer.conf
+```
+
+By default an address with 5 suspicious requests within 10 minutes is banned for 1 hour; repeat offenders are banned longer (up to 1 week). `127.0.0.1` and `192.168.0.0/16` (LAN) are never banned.
+
+```bash
+sudo fail2ban-client status pfs-viewer               # list banned addresses
+sudo fail2ban-client set pfs-viewer unbanip 1.2.3.4  # unban
+```
 
 ---
 

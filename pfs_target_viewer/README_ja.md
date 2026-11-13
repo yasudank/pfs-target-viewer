@@ -185,6 +185,7 @@ python app.py [-h] [-d OPT_DIR] [-c CONFIG] [--host HOST] [--port PORT] [--db DB
 - `--port`: リッスンするポート番号（デフォルト: `8090`）
 - `--db`: SQLite データベースファイルへの個別明示パス（個別指定時に `--dir` より優先）
 - `--data-dir`: `extracted_targets` ディレクトリへの個別明示パス（個別指定時に `--dir` より優先）
+- `--security-log`: 不正アクセス遮断用のセキュリティログのパス（後述。`none` で無効）
 
 ---
 
@@ -221,3 +222,40 @@ data_dir = "/path/to/extracted_targets"
 - パスワードは平文で書くため、`datasets.toml` は `.gitignore` で git の管理対象外にしています。ファイルのパーミッションにも注意してください。
 - `secret_key` を設定しない場合はサーバー起動のたびにランダムな鍵が作られるため、再起動後はパスワードの再入力が必要です。
 - `--dir` などでディレクトリも指定した場合は、そのデータセットが設定ファイルのデータセットに加えて一覧の先頭に表示されます。データセットが 1 つだけでパスワードもない場合は、従来どおり選択画面を経由せずに表示されます。
+
+---
+
+## 不正アクセスの遮断（fail2ban）
+
+外部に公開しているマシンでは、脆弱性スキャナーなどからのアクセスを fail2ban でファイアウォールごと遮断できます。
+
+ビューアは不審なリクエストを、接続元 IP 付きでセキュリティログに 1 行ずつ記録します。ログの場所は既定で `~/.local/state/pfs-target-viewer/security.log` で、`--security-log PATH` で変更、`--security-log none` で無効にできます。fail2ban は root で動き、NFS 上のファイルを読めないことが多いため、ローカルディスクに置いてください。
+
+| event | 内容 | 既定で遮断の対象 |
+|---|---|---|
+| `not_found` | ビューアに存在しない URL（`/wp-login.php`、`/.env` など） | ✅ |
+| `bad_password` | データセットのパスワード間違い | ✅ |
+| `method_not_allowed` | 不正な HTTP メソッド | ✅ |
+| `unauthorized` | データセット未選択での API アクセス（セッション切れの正規ユーザーでも起きる） | ❌（記録のみ） |
+
+実在する天体のスペクトルや FITS がないための 404 や、ブラウザが自動で取りに来る `/favicon.ico` などは記録しません。
+
+### 導入手順（root 権限が必要）
+
+```bash
+sudo apt install fail2ban
+sudo cp fail2ban/filter.d/pfs-viewer.conf /etc/fail2ban/filter.d/
+sudo cp fail2ban/jail.d/pfs-viewer.local  /etc/fail2ban/jail.d/
+sudo vi /etc/fail2ban/jail.d/pfs-viewer.local   # logpath・port・ignoreip を環境に合わせて確認
+sudo systemctl enable --now fail2ban
+
+# 判定ルールがログに一致するかの確認
+sudo fail2ban-regex ~/.local/state/pfs-target-viewer/security.log /etc/fail2ban/filter.d/pfs-viewer.conf
+```
+
+既定では、10 分間に 5 回不審なリクエストを送った IP を 1 時間遮断します。繰り返す IP は遮断時間が延び、最長 1 週間です。`127.0.0.1` と `192.168.0.0/16`（LAN）は遮断しません。
+
+```bash
+sudo fail2ban-client status pfs-viewer               # 遮断中の IP 一覧
+sudo fail2ban-client set pfs-viewer unbanip 1.2.3.4  # 遮断の解除
+```

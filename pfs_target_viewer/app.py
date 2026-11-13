@@ -11,6 +11,8 @@ import hashlib
 import hmac
 import io
 import json
+import logging
+import logging.handlers
 import gzip
 import os
 import sqlite3
@@ -41,6 +43,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from starlette.routing import Match
 from fastapi.templating import Jinja2Templates
 
 # Base directories
@@ -842,7 +845,16 @@ def load_or_build_master_sky_cache(ds: Dataset, force: bool = False) -> Tuple[Op
 # -----------------------------------------------------------------------------
 # Frontend Route
 # -----------------------------------------------------------------------------
-PUBLIC_PATHS = {"/datasets", "/api/datasets", "/api/datasets/select", "/favicon.ico"}
+PUBLIC_PATHS = {"/datasets", "/api/datasets", "/api/datasets/select", "/favicon.ico", "/robots.txt"}
+
+
+def route_exists(scope) -> bool:
+    """True if some route matches the request path (with any HTTP method)."""
+    for route in app.router.routes:
+        match, _ = route.matches(scope)
+        if match != Match.NONE:
+            return True
+    return False
 
 
 @app.middleware("http")
@@ -854,7 +866,8 @@ async def dataset_middleware(request: Request, call_next):
     showing different datasets coexist.
     """
     path = request.url.path
-    if path.startswith("/static/") or path in PUBLIC_PATHS:
+    if path.startswith("/static/") or path in PUBLIC_PATHS or not route_exists(request.scope):
+        # Unknown URLs go straight to the normal 404 (logged as not_found for fail2ban)
         return await call_next(request)
 
     REGISTRY.reload_if_changed()
@@ -886,6 +899,94 @@ async def dataset_middleware(request: Request, call_next):
         session["ds"] = ds.id
         set_session_cookie(response, session)
     return response
+
+
+# -----------------------------------------------------------------------------
+# Security Event Log (for fail2ban)
+# -----------------------------------------------------------------------------
+# One line per suspicious request, e.g.
+#   2026-11-13T15:40:00+0900 pfs-viewer client=203.0.113.5 event=not_found status=404 method=GET path=/wp-login.php
+# fail2ban (see fail2ban/ in this directory) bans clients with repeated events at the firewall.
+# Kept on local disk by default: fail2ban runs as root, which often cannot read NFS-mounted files.
+DEFAULT_SECURITY_LOG = os.path.expanduser("~/.local/state/pfs-target-viewer/security.log")
+security_logger = logging.getLogger("pfs_viewer.security")
+security_logger.propagate = False
+
+# Requests browsers make on their own; a 404 for them is not suspicious
+BENIGN_404_PATHS = {"/favicon.ico", "/robots.txt"}
+BENIGN_404_PREFIXES = ("/apple-touch-icon", "/.well-known/appspecific/")
+
+
+def setup_security_log(path: Optional[str]):
+    """Write security events to ``path`` ('' or 'none' disables). Safe to call more than once."""
+    for h in list(security_logger.handlers):
+        security_logger.removeHandler(h)
+        h.close()
+    if not path or path.lower() == "none":
+        security_logger.disabled = True
+        return None
+    path = os.path.abspath(os.path.expanduser(path))
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # WatchedFileHandler reopens the file after logrotate moves it
+        handler = logging.handlers.WatchedFileHandler(path, encoding="utf-8")
+    except OSError as e:
+        print(f"  ⚠️ Cannot open security log {path}: {e}")
+        security_logger.disabled = True
+        return None
+    handler.setFormatter(logging.Formatter("%(asctime)s pfs-viewer %(message)s", datefmt="%Y-%m-%dT%H:%M:%S%z"))
+    security_logger.addHandler(handler)
+    security_logger.setLevel(logging.INFO)
+    security_logger.disabled = False
+    return path
+
+
+def classify_security_event(method: str, path: str, status: int) -> Optional[str]:
+    """Return the event name for a suspicious response, or None."""
+    if status == 403 and path == "/api/datasets/select":
+        return "bad_password"
+    if status == 404:
+        # Missing spectra/FITS of real targets are normal; other unknown URLs are typical of scanners
+        if path.startswith("/api/targets/") or path in BENIGN_404_PATHS or path.startswith(BENIGN_404_PREFIXES):
+            return None
+        return "not_found"
+    if status == 405:
+        return "method_not_allowed"
+    if status == 401:
+        # Also happens for legitimate browsers with an expired session; logged but not banned by default
+        return "unauthorized"
+    return None
+
+
+@app.middleware("http")
+async def security_log_middleware(request: Request, call_next):
+    """Log suspicious requests (outermost middleware, so it also sees responses of dataset_middleware)."""
+    response = await call_next(request)
+    if not security_logger.disabled and security_logger.handlers:
+        path = request.url.path
+        event = classify_security_event(request.method, path, response.status_code)
+        if event:
+            client = request.client.host if request.client else "-"
+            # Percent-encode so that the logged path cannot contain spaces, '=' or newlines
+            # (prevents log lines that would make fail2ban ban another address)
+            safe_path = urllib.parse.quote(path[:300], safe="/._-~%")
+            method = re.sub(r"[^A-Z]", "", request.method.upper())[:10] or "-"
+            security_logger.info(f"client={client} event={event} status={response.status_code} "
+                                 f"method={method} path={safe_path}")
+    return response
+
+
+SECURITY_LOG_PATH = setup_security_log(os.getenv("PFS_SECURITY_LOG", DEFAULT_SECURITY_LOG))
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(status_code=204)
+
+
+@app.get("/robots.txt", include_in_schema=False)
+async def robots_txt():
+    return Response("User-agent: *\nDisallow: /\n", media_type="text/plain")
 
 
 def set_session_cookie(response: Response, session: dict):
@@ -2915,6 +3016,9 @@ Examples:
     parser.add_argument("--db", default=None, help="Explicit path to pfs_metadata.sqlite3")
     parser.add_argument("--data-dir", default=None, help="Explicit path to extracted_targets directory")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload on code changes")
+    parser.add_argument("--security-log", default=None,
+                        help=f"Log file of suspicious requests for fail2ban ('none' to disable; "
+                             f"default: {DEFAULT_SECURITY_LOG})")
     args = parser.parse_args()
 
     # Pass settings through environment variables so that --reload workers see them too
@@ -2927,7 +3031,10 @@ Examples:
         os.environ["PFS_DB_PATH"] = os.path.abspath(os.path.expanduser(args.db))
     if args.data_dir:
         os.environ["PFS_DATA_DIR"] = os.path.abspath(os.path.expanduser(args.data_dir))
+    if args.security_log is not None:
+        os.environ["PFS_SECURITY_LOG"] = args.security_log
     init_registry_from_env()
+    SECURITY_LOG_PATH = setup_security_log(os.getenv("PFS_SECURITY_LOG", DEFAULT_SECURITY_LOG))
 
     print("=" * 70)
     print("  🌌 Starting PFS Target & Spectrum Viewer")
@@ -2954,6 +3061,7 @@ Examples:
         print(f"     📁 Data Dir:  {d.data_dir} [{data_status}]")
     if not REGISTRY.all():
         print("  ⚠️  No datasets configured.")
+    print(f"  🛡️  Security log:  {SECURITY_LOG_PATH or 'disabled'}")
     print(f"  🌐 URL:           http://{args.host}:{args.port}")
     if missing:
         print("-" * 70)

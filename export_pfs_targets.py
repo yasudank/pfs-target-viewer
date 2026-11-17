@@ -304,9 +304,11 @@ def process_target_task(task):
         else:
             # Calibrated (QL) mode
             specs = []
+            used_visits = []
             for v in relevant_visits:
                 if v in _SHARED_CACHE and objId in _SHARED_CACHE[v]:
                     specs.append(_SHARED_CACHE[v][objId])
+                    used_visits.append(int(v))
 
             if not specs:
                 return {"status": "skipped", "catId": catId, "objId": objId,
@@ -413,6 +415,14 @@ def process_target_task(task):
                                     vexp[v] = exp_val
                         if vexp:
                             rec["exptime"] = round(sum(vexp.values()), 3)
+            # QL: the expTime of pfsCalibrated observations is summed over the cameras; use the
+            # exposure times of the visits (visits.exptime from the Butler visit records) instead.
+            if dataset_type != "coadd":
+                vt = cfg.get("visit_exptime") or {}
+                used = sorted(set(used_visits))
+                rec["nvisit"] = len(used)
+                rec["exptime"] = (round(sum(vt[v] for v in used), 3)
+                                  if used and all(vt.get(v) is not None for v in used) else None)
 
         return {
             "status": "ok",
@@ -730,6 +740,14 @@ def main():
         target_visits_map = {}
         for c_id, o_id, v_id in cur.fetchall():
             target_visits_map.setdefault((c_id, o_id), []).append(v_id)
+        cur.execute("PRAGMA table_info(visits)")
+        if "exptime" in {row[1] for row in cur.fetchall()}:
+            cur.execute("SELECT visit, exptime FROM visits WHERE exptime IS NOT NULL")
+            cfg["visit_exptime"] = {int(v): float(e) for v, e in cur.fetchall()}
+        else:
+            print("  Warning: visits.exptime is missing; run build_pfs_database.py (e.g. with "
+                  "--skip-fiber-configs --skip-candidates --skip-target-summary) to fill it. "
+                  "target_summary.exptime is left unchanged.", file=sys.stderr)
         conn.close()
 
         # Find which visits are actually needed for selected targets

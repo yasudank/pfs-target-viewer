@@ -5,7 +5,8 @@ repository into a relational SQLite database.
 
 Tables & Views created
 ----------------------
-visits              one row per visit (design-level pfsConfig metadata)
+visits              one row per visit (design-level pfsConfig metadata; exptime / darktime [s] from the
+                     Butler visit dimension records)
 fiber_configs       one row per (visit, fiberId) (per-fiber pfsConfig entry: ra, dec, obCode, targetType, fiberStatus)
 coadd_groups        one row per (catId, combination, objGroup) coadd group
 targets             one row per (catId, objId, combination): classification result, proba, bestRedshift, bestVelocity
@@ -52,7 +53,9 @@ CREATE TABLE IF NOT EXISTS visits (
     obstimeDesign TEXT,
     camMask INTEGER,
     instStatusFlag INTEGER,
-    visit0 INTEGER
+    visit0 INTEGER,
+    exptime REAL,
+    darktime REAL
 );
 
 CREATE TABLE IF NOT EXISTS fiber_configs (
@@ -328,12 +331,52 @@ def _clean_ob_code(ob_code):
     return s
 
 
+def migrate_visits(conn):
+    """Add the exposure-time columns to an existing visits table."""
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(visits)")
+    cols = {row[1] for row in cur.fetchall()}
+    for col in ("exptime", "darktime"):
+        if col not in cols:
+            cur.execute(f"ALTER TABLE visits ADD COLUMN {col} REAL")
+    conn.commit()
+
+
+def visit_exposure_times(butler):
+    """{visit: (exposure_time, dark_time)} in seconds from the Butler ``visit`` dimension records.
+
+    The ``expTime`` of the observations in pfsCalibrated (QL) spectra is summed over the cameras, so the
+    visit records are the reliable source of the exposure time of one visit.
+    """
+    out = {}
+    try:
+        for rec in butler.registry.queryDimensionRecords("visit"):
+            out[int(rec.id)] = (_pyval(getattr(rec, "exposure_time", None)),
+                                _pyval(getattr(rec, "dark_time", None)))
+    except Exception as e:  # registry without visit records
+        print(f"Warning: could not read visit dimension records: {e}", file=sys.stderr)
+    return out
+
+
+def update_visit_exposure_times(butler, conn):
+    """Fill visits.exptime / visits.darktime of the visits already in the database."""
+    times = visit_exposure_times(butler)
+    cur = conn.cursor()
+    cur.executemany("UPDATE visits SET exptime = ?, darktime = ? WHERE visit = ?",
+                    [(e, d, v) for v, (e, d) in times.items()])
+    conn.commit()
+    cur.execute("SELECT COUNT(*), SUM(exptime IS NULL) FROM visits")
+    n, n_null = cur.fetchone()
+    print(f"Visit exposure times: {n - (n_null or 0):,} of {n:,} visits filled from the Butler visit records.")
+
+
 def load_fiber_configs(butler, conn, limit=None):
     """Read every ``pfsConfig`` dataset and populate the visits/fiber_configs tables."""
     refs = list(butler.registry.queryDatasets('pfsConfig'))
     if limit is not None:
         refs = refs[:limit]
     print(f"Processing {len(refs)} pfsConfig datasets")
+    exp_times = visit_exposure_times(butler)
 
     cur = conn.cursor()
     for i, ref in enumerate(refs):
@@ -344,8 +387,8 @@ def load_fiber_configs(butler, conn, limit=None):
             """
             INSERT OR REPLACE INTO visits
                 (visit, pfsDesignId, designName, raBoresight, decBoresight, posAng,
-                 arms, obstime, obstimeDesign, camMask, instStatusFlag, visit0)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 arms, obstime, obstimeDesign, camMask, instStatusFlag, visit0, exptime, darktime)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 visit, _pyval(pfsConfig.pfsDesignId), pfsConfig.designName,
@@ -353,7 +396,7 @@ def load_fiber_configs(butler, conn, limit=None):
                 _pyval(pfsConfig.posAng), pfsConfig.arms,
                 pfsConfig.obstime, pfsConfig.obstimeDesign,
                 _pyval(pfsConfig.camMask), _pyval(pfsConfig.instStatusFlag),
-                _pyval(pfsConfig.visit0),
+                _pyval(pfsConfig.visit0), *exp_times.get(int(visit), (None, None)),
             ),
         )
 
@@ -710,7 +753,7 @@ def populate_target_summary(conn):
                     'UNKNOWN', NULL, NULL, NULL,
                     NULL, NULL, NULL, NULL,
                     NULL, 0,
-                    vis_cnt.n_visits, NULL,
+                    vis_cnt.n_visits, vis_cnt.exptime,
                     COALESCE(tf.has_fits, 0), tf.fits_path, COALESCE(tf.has_png, 0), tf.png_path,
                     fc.visit, tf.exported_last_visit
                 FROM (
@@ -720,9 +763,10 @@ def populate_target_summary(conn):
                     WHERE targetTypeName IN ('SCIENCE', 'FLUXSTD', 'SKY')
                 ) fc
                 LEFT JOIN (
-                    SELECT catId, objId, COUNT(DISTINCT visit) as n_visits
-                    FROM fiber_configs
-                    GROUP BY catId, objId
+                    SELECT f.catId, f.objId, COUNT(*) as n_visits, SUM(v.exptime) as exptime
+                    FROM (SELECT DISTINCT catId, objId, visit FROM fiber_configs) f
+                    LEFT JOIN visits v ON v.visit = f.visit
+                    GROUP BY f.catId, f.objId
                 ) vis_cnt ON fc.catId = vis_cnt.catId AND fc.objId = vis_cnt.objId
                 LEFT JOIN _temp_target_files tf
                     ON fc.catId = tf.catId AND fc.objId = tf.objId AND tf.combination = 'ql'
@@ -824,7 +868,8 @@ def main():
     parser.add_argument("--limit-groups", type=int, default=None,
                          help="Limit number of pfsCoZCandidates groups to process")
     parser.add_argument("--skip-fiber-configs", action="store_true",
-                         help="Do not (re-)populate the visits/fiber_configs tables")
+                         help="Do not (re-)populate the visits/fiber_configs tables (the exposure times of the "
+                              "visits already in the database are still filled from the Butler visit records)")
     parser.add_argument("--skip-candidates", action="store_true",
                          help="Do not (re-)populate the target/candidate tables")
     parser.add_argument("--skip-target-summary", action="store_true",
@@ -840,10 +885,13 @@ def main():
     conn = sqlite3.connect(args.db)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    migrate_visits(conn)
     migrate_target_summary(conn)
 
     if not args.skip_fiber_configs:
         load_fiber_configs(butler, conn, limit=args.limit_visits)
+    else:
+        update_visit_exposure_times(butler, conn)
     if not args.skip_candidates:
         load_redshift_candidates(butler, conn, limit=args.limit_groups)
         export_spectral_lines_cache(conn, args.db)

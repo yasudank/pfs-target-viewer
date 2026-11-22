@@ -2437,7 +2437,7 @@ async function fetchAllSkyPositions() {
   const params = new URLSearchParams({ limit: 500000 });
 
   try {
-    const res = await fetch(`/api/targets/sky_positions?${params.toString()}`);
+    const res = await fetch(dsUrl(`/api/targets/sky_positions?${params.toString()}`));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     state.masterSkyTargets = data.targets || [];

@@ -163,6 +163,7 @@ class Dataset:
         self.sky_gzip_bytes: Optional[bytes] = None
         self.sky_json_bytes: Optional[bytes] = None
         self.sky_etag: Optional[str] = None
+        self.sky_db_mtime: float = 0.0
 
         # Spectral lines catalog cache
         self.lines_lock = threading.Lock()
@@ -756,18 +757,19 @@ def load_or_build_master_sky_cache(ds: Dataset, force: bool = False) -> Tuple[Op
     if not active_db or not os.path.exists(active_db):
         return None, None, None
 
-    if not force and ds.sky_gzip_bytes is not None and ds.sky_json_bytes is not None:
+    # The in-memory cache is valid only while the database is unchanged (it may be rebuilt
+    # while the server is running)
+    db_mtime = os.path.getmtime(active_db)
+    if not force and ds.sky_gzip_bytes is not None and ds.sky_db_mtime == db_mtime:
         return ds.sky_gzip_bytes, ds.sky_json_bytes, ds.sky_etag
 
     with ds.sky_lock:
-        if not force and ds.sky_gzip_bytes is not None and ds.sky_json_bytes is not None:
+        if not force and ds.sky_gzip_bytes is not None and ds.sky_db_mtime == db_mtime:
             return ds.sky_gzip_bytes, ds.sky_json_bytes, ds.sky_etag
 
         cache_file = get_sky_cache_file_path(active_db)
         legacy_cache_file = os.path.join(os.path.dirname(active_db), ".sky_positions_cache.json.gz")
         chosen_cache_file = cache_file if os.path.exists(cache_file) else (legacy_cache_file if os.path.exists(legacy_cache_file) else cache_file)
-
-        db_mtime = os.path.getmtime(active_db)
 
         # 1. Try reading from disk cache if valid and newer than database (even after db switch, disk cache is preferred over rebuilding)
         if not force and os.path.exists(chosen_cache_file) and os.path.getmtime(chosen_cache_file) >= db_mtime:
@@ -776,7 +778,8 @@ def load_or_build_master_sky_cache(ds: Dataset, force: bool = False) -> Tuple[Op
                 with open(chosen_cache_file, "rb") as f:
                     gz_data = f.read()
                 raw_data = gzip.decompress(gz_data)
-                etag = f'W/"sky-{len(gz_data)}-{int(db_mtime)}"'
+                etag = f'W/"sky-{ds.id}-{len(gz_data)}-{int(db_mtime)}"'
+                ds.sky_db_mtime = db_mtime
                 ds.sky_gzip_bytes = gz_data
                 ds.sky_json_bytes = raw_data
                 ds.sky_etag = etag
@@ -823,8 +826,9 @@ def load_or_build_master_sky_cache(ds: Dataset, force: bool = False) -> Tuple[Op
 
             raw_bytes = json.dumps({"total": len(results), "targets": results}).encode("utf-8")
             gz_bytes = gzip.compress(raw_bytes, compresslevel=6)
-            etag = f'W/"sky-{len(gz_bytes)}-{int(db_mtime)}"'
+            etag = f'W/"sky-{ds.id}-{len(gz_bytes)}-{int(db_mtime)}"'
 
+            ds.sky_db_mtime = db_mtime
             ds.sky_gzip_bytes = gz_bytes
             ds.sky_json_bytes = raw_bytes
             ds.sky_etag = etag
@@ -1403,28 +1407,29 @@ def get_sky_positions(
     )
     if is_unfiltered:
         gz_data, raw_data, etag = load_or_build_master_sky_cache(cur_ds())
+        # The URL is the same for all datasets (the dataset may come from the X-PFS-Dataset
+        # header) and the database can be rebuilt, so let the browser revalidate every time
+        # (cheap 304 via the ETag) instead of reusing a cached copy for a day.
+        cache_headers = {
+            "Cache-Control": "private, no-cache",
+            "Vary": "X-PFS-Dataset, Accept-Encoding",
+            "ETag": etag or 'W/"sky-cache"',
+        }
         if etag and request.headers.get("if-none-match") == etag:
-            return Response(status_code=304)
+            return Response(status_code=304, headers=cache_headers)
 
         accept_encoding = request.headers.get("accept-encoding", "").lower()
         if "gzip" in accept_encoding and gz_data:
             return Response(
                 content=gz_data,
                 media_type="application/json",
-                headers={
-                    "Content-Encoding": "gzip",
-                    "Cache-Control": "public, max-age=86400",
-                    "ETag": etag or 'W/"sky-cache"',
-                },
+                headers={"Content-Encoding": "gzip", **cache_headers},
             )
         if raw_data:
             return Response(
                 content=raw_data,
                 media_type="application/json",
-                headers={
-                    "Cache-Control": "public, max-age=86400",
-                    "ETag": etag or 'W/"sky-cache"',
-                },
+                headers=cache_headers,
             )
 
     where_clauses = ["t.ra IS NOT NULL", "t.dec IS NOT NULL"]

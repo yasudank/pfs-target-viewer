@@ -442,13 +442,22 @@ def load_redshift_candidates(butler, conn, limit=None):
     print(f"Processing {len(refs)} pfsCoadd/pfsCoZCandidates groups")
 
     cur = conn.cursor()
+    nSkipped = 0
     for i, ref in enumerate(refs):
         dataId = ref.dataId
         catId = dataId['cat_id']
         combination = dataId['combination']
         objGroup = dataId['obj_group']
 
-        coZCands = butler.get('pfsCoZCandidates', dataId)
+        try:
+            coZCands = butler.get('pfsCoZCandidates', dataId)
+        except LookupError as e:
+            # Some pfsCoadd groups have no pfsCoZCandidates (e.g. the redshift
+            # step failed or was not run for them); skip instead of aborting.
+            print(f"  [{i + 1}/{len(refs)}] Warning: skipping {dataId}: "
+                  f"pfsCoZCandidates not found ({type(e).__name__})")
+            nSkipped += 1
+            continue
         targets = list(coZCands.keys())
 
         # Load pfsCoadd for this group to extract nvisit and exptime per target
@@ -649,6 +658,8 @@ def load_redshift_candidates(butler, conn, limit=None):
         print(f"  [{i + 1}/{len(refs)}] catId={catId} combination={combination} "
               f"objGroup={objGroup}: {len(targets)} targets, {len(candidateRows)} candidates, "
               f"{len(lineRows)} line measurements")
+    if nSkipped:
+        print(f"Skipped {nSkipped} group(s) without pfsCoZCandidates")
 
 
 def migrate_target_summary(conn):

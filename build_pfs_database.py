@@ -253,6 +253,18 @@ CREATE TABLE IF NOT EXISTS target_summary (
     png_path TEXT,
     last_visit INTEGER,
     exported_last_visit INTEGER,
+    mjd_first REAL,
+    mjd_last REAL,
+    mjd_mean REAL,
+    n_nights INTEGER,
+    arms TEXT,
+    cov_b REAL,
+    cov_r REAL,
+    cov_n REAL,
+    snr_b REAL,
+    snr_r REAL,
+    snr_n REAL,
+    fiber_offset_mm REAL,
     PRIMARY KEY (catId, objId, combination)
 );
 CREATE INDEX IF NOT EXISTS idx_ts_classification ON target_summary (classificationName);
@@ -264,6 +276,26 @@ CREATE INDEX IF NOT EXISTS idx_ts_nvisit ON target_summary (nvisit);
 CREATE INDEX IF NOT EXISTS idx_ts_exptime ON target_summary (exptime);
 CREATE INDEX IF NOT EXISTS idx_ts_has_fits ON target_summary (has_fits);
 CREATE INDEX IF NOT EXISTS idx_ts_has_png ON target_summary (has_png);
+CREATE INDEX IF NOT EXISTS idx_ts_mjd_mean ON target_summary (mjd_mean);
+CREATE INDEX IF NOT EXISTS idx_ts_snr_r ON target_summary (snr_r);
+
+CREATE TABLE IF NOT EXISTS target_visits (
+    catId INTEGER NOT NULL,
+    objId INTEGER NOT NULL,
+    combination TEXT NOT NULL,
+    visit INTEGER NOT NULL,
+    arm TEXT NOT NULL DEFAULT '',
+    spectrograph INTEGER,
+    fiberId INTEGER,
+    obsTime TEXT,
+    mjd REAL,
+    expTime REAL,
+    pfiOffsetMm REAL,
+    PRIMARY KEY (catId, objId, combination, visit, arm)
+);
+CREATE INDEX IF NOT EXISTS idx_target_visits_target ON target_visits (catId, objId, combination);
+CREATE INDEX IF NOT EXISTS idx_target_visits_visit ON target_visits (visit);
+CREATE INDEX IF NOT EXISTS idx_target_visits_mjd ON target_visits (mjd);
 
 CREATE VIEW IF NOT EXISTS v_target_summary AS SELECT * FROM target_summary;
 
@@ -685,25 +717,32 @@ def migrate_target_summary(conn):
         print(f"Migrated target_summary: marked {cur.rowcount:,} already-exported targets "
               "with exported_last_visit.")
     conn.commit()
+    from fits_metadata import ensure_fits_metadata_schema
+    ensure_fits_metadata_schema(conn)
 
 
 def populate_target_summary(conn):
     """Populate target_summary materialized table from targets and latest fiber_configs.
 
-    File paths (has_fits/fits_path/has_png/png_path) and export state
-    (exported_last_visit) of existing rows are preserved across rebuilds.
+    File paths (has_fits/fits_path/has_png/png_path), export state (exported_last_visit),
+    and FITS-derived metadata columns of existing rows are preserved across rebuilds.
     """
     print("\nPopulating target_summary materialized table...")
+    from fits_metadata import FITS_SUMMARY_COL_NAMES, ensure_fits_metadata_schema
+    ensure_fits_metadata_schema(conn)
     cur = conn.cursor()
 
-    # Preserve file paths and export state of existing rows
+    meta_cols_sql = ", ".join(FITS_SUMMARY_COL_NAMES)
+    tf_meta_cols_sql = ", ".join(f"tf.{c}" for c in FITS_SUMMARY_COL_NAMES)
+
+    # Preserve file paths, export state, and FITS-derived metadata of existing rows
     cur.execute("DROP TABLE IF EXISTS _temp_target_files")
-    cur.execute("""
+    cur.execute(f"""
         CREATE TEMP TABLE _temp_target_files AS
         SELECT catId, objId, combination, has_fits, fits_path, has_png, png_path,
-               exported_last_visit
+               exported_last_visit, {meta_cols_sql}
         FROM target_summary
-        WHERE has_fits = 1 OR has_png = 1 OR exported_last_visit IS NOT NULL
+        WHERE has_fits = 1 OR has_png = 1 OR exported_last_visit IS NOT NULL OR mjd_mean IS NOT NULL
     """)
     cur.execute("SELECT count(*) FROM _temp_target_files")
     preserved = cur.fetchone()[0]
@@ -711,7 +750,7 @@ def populate_target_summary(conn):
         print(f"  Preserving {preserved:,} existing file path records...")
 
     cur.execute("DELETE FROM target_summary")
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO target_summary (
             catId, objId, combination, objGroup,
             obCode, targetTypeName, fiberStatusName, ra, dec,
@@ -720,7 +759,7 @@ def populate_target_summary(conn):
             bestSubClass, hasSolution,
             nvisit, exptime,
             has_fits, fits_path, has_png, png_path,
-            last_visit, exported_last_visit
+            last_visit, exported_last_visit, {meta_cols_sql}
         )
         SELECT 
             t.catId, t.objId, t.combination, t.objGroup,
@@ -730,7 +769,7 @@ def populate_target_summary(conn):
             t.bestSubClass, t.hasSolution,
             t.nvisit, t.exptime,
             COALESCE(tf.has_fits, 0), tf.fits_path, COALESCE(tf.has_png, 0), tf.png_path,
-            fc.visit, tf.exported_last_visit
+            fc.visit, tf.exported_last_visit, {tf_meta_cols_sql}
         FROM targets t
         LEFT JOIN (
             SELECT catId, objId, visit, obCode, targetTypeName, fiberStatusName, ra, dec,
@@ -747,7 +786,7 @@ def populate_target_summary(conn):
         fc_cnt = cur.fetchone()[0]
         if fc_cnt > 0:
             print(f"  Note: 'targets' table is empty. Populating target_summary from fiber_configs (QL mode)...")
-            cur.execute("""
+            cur.execute(f"""
                 INSERT INTO target_summary (
                     catId, objId, combination, objGroup,
                     obCode, targetTypeName, fiberStatusName, ra, dec,
@@ -756,7 +795,7 @@ def populate_target_summary(conn):
                     bestSubClass, hasSolution,
                     nvisit, exptime,
                     has_fits, fits_path, has_png, png_path,
-                    last_visit, exported_last_visit
+                    last_visit, exported_last_visit, {meta_cols_sql}
                 )
                 SELECT 
                     fc.catId, fc.objId, 'ql', 0,
@@ -766,7 +805,7 @@ def populate_target_summary(conn):
                     NULL, 0,
                     vis_cnt.n_visits, vis_cnt.exptime,
                     COALESCE(tf.has_fits, 0), tf.fits_path, COALESCE(tf.has_png, 0), tf.png_path,
-                    fc.visit, tf.exported_last_visit
+                    fc.visit, tf.exported_last_visit, {tf_meta_cols_sql}
                 FROM (
                     SELECT catId, objId, visit, obCode, targetTypeName, fiberStatusName, ra, dec,
                            ROW_NUMBER() OVER (PARTITION BY catId, objId ORDER BY visit DESC) as rn

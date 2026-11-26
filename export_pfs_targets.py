@@ -424,6 +424,17 @@ def process_target_task(task):
                 rec["exptime"] = (round(sum(vt[v] for v in used), 3)
                                   if used and all(vt.get(v) is not None for v in used) else None)
 
+            # Extract per-target coadd observation metadata (MJD, arms, per-arm coverage & S/N, fiber offset)
+            from fits_metadata import extract_from_pfsobject
+            fmeta, visit_rows = extract_from_pfsobject(
+                pfsObj, catId, objId, combination,
+                visit_exptime=cfg.get("visit_exptime"),
+                use_visit_exptime=(dataset_type != "coadd"),
+            )
+            rec.update(fmeta)
+        else:
+            visit_rows = []
+
         return {
             "status": "ok",
             "catId": catId,
@@ -431,6 +442,7 @@ def process_target_task(task):
             "fits_saved": fits_saved,
             "png_saved": png_saved,
             "rec": rec,
+            "visit_rows": visit_rows,
         }
     except Exception as e:
         import traceback
@@ -726,6 +738,7 @@ def main():
     fits_count = 0
     png_count = 0
     db_updates = []
+    db_visit_rows = []
 
     if dataset_type == "calibrated":
         cal_refs = list(butler.registry.queryDatasets("pfsCalibrated", collections=args.collections))
@@ -808,6 +821,8 @@ def main():
                     png_count += 1
                 if res.get("rec"):
                     db_updates.append(res["rec"])
+                if res.get("visit_rows"):
+                    db_visit_rows.extend(res["visit_rows"])
             elif res.get("status") == "skipped":
                 print(f"  Skipped objId={res.get('objId')}: {res.get('msg')}")
 
@@ -846,9 +861,15 @@ def main():
                     print(f"  Skipped objId={res.get('objId')}: {res.get('msg')}")
 
     if not args.no_update_db and db_updates:
-        print(f"\nUpdating file paths in {args.db} for {len(db_updates)} targets...")
+        print(f"\nUpdating file paths and FITS metadata in {args.db} for {len(db_updates)} targets...")
         try:
+            from fits_metadata import (
+                FITS_SUMMARY_COL_NAMES,
+                ensure_fits_metadata_schema,
+                write_target_visits,
+            )
             conn = sqlite3.connect(args.db)
+            ensure_fits_metadata_schema(conn)
             cur = conn.cursor()
             cur.execute("PRAGMA table_info(target_summary)")
             cols = {row[1] for row in cur.fetchall()}
@@ -865,6 +886,9 @@ def main():
                 update_cols.append("exptime = COALESCE(:exptime, exptime)")
             if "exported_last_visit" in cols:
                 update_cols.append("exported_last_visit = COALESCE(:exported_last_visit, exported_last_visit)")
+            for c in FITS_SUMMARY_COL_NAMES:
+                if c in cols:
+                    update_cols.append(f"{c} = COALESCE(:{c}, {c})")
 
             if update_cols:
                 # Ensure all binding parameter keys exist across every record in batch
@@ -872,6 +896,8 @@ def main():
                     r.setdefault("nvisit", None)
                     r.setdefault("exptime", None)
                     r.setdefault("exported_last_visit", None)
+                    for c in FITS_SUMMARY_COL_NAMES:
+                        r.setdefault(c, None)
                     if not args.skip_fits:
                         r.setdefault("has_fits", 0)
                         r.setdefault("fits_path", None)
@@ -883,8 +909,10 @@ def main():
                 where_clause = "catId = :catId AND objId = :objId" + (" AND combination = :combination" if has_comb else "")
                 sql = f"UPDATE target_summary SET {set_clause} WHERE {where_clause}"
                 cur.executemany(sql, db_updates)
+                target_keys = [(r["catId"], r["objId"], r["combination"]) for r in db_updates]
+                write_target_visits(conn, target_keys, db_visit_rows)
                 conn.commit()
-                print("  Database target_summary table updated successfully.")
+                print(f"  Database target_summary ({len(db_updates)}) and target_visits ({len(db_visit_rows)}) updated successfully.")
             conn.close()
         except Exception as e:
             print(f"  Warning: Failed to update database: {e}", file=sys.stderr)

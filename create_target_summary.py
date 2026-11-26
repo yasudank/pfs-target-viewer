@@ -73,15 +73,19 @@ def main():
     print(f"📊 Source 'fiber_configs' row count: {fc_count:,}", flush=True)
 
     # Check if target_summary exists and has existing file path entries to preserve
+    from fits_metadata import FITS_SUMMARY_COLUMNS, FITS_SUMMARY_COL_NAMES, ensure_fits_metadata_schema
+
     cur.execute("PRAGMA table_info(target_summary)")
     existing_cols = {row[1] for row in cur.fetchall()}
     has_file_cols = "has_fits" in existing_cols and "fits_path" in existing_cols
+    preserved_meta_cols = [c for c in FITS_SUMMARY_COL_NAMES if c in existing_cols]
 
     cur.execute("DROP TABLE IF EXISTS _temp_target_files")
     if has_file_cols:
-        cur.execute("""
+        extra_sel = (", " + ", ".join(preserved_meta_cols)) if preserved_meta_cols else ""
+        cur.execute(f"""
             CREATE TEMP TABLE _temp_target_files AS
-            SELECT catId, objId, combination, has_fits, fits_path, has_png, png_path
+            SELECT catId, objId, combination, has_fits, fits_path, has_png, png_path{extra_sel}
             FROM target_summary
             WHERE has_fits = 1 OR has_png = 1
         """)
@@ -98,7 +102,8 @@ def main():
 
     # 1. Create table schema without secondary indexes (faster bulk insert)
     print("\n1️⃣  Creating table schema 'target_summary'...", flush=True)
-    cur.execute("""
+    meta_ddl = ",\n        ".join(f"{c} {t}" for c, t in FITS_SUMMARY_COLUMNS)
+    cur.execute(f"""
     CREATE TABLE target_summary (
         catId INTEGER NOT NULL,
         objId INTEGER NOT NULL,
@@ -125,6 +130,7 @@ def main():
         fits_path TEXT,
         has_png INTEGER DEFAULT 0,
         png_path TEXT,
+        {meta_ddl},
         PRIMARY KEY (catId, objId, combination)
     );
     """)
@@ -141,6 +147,11 @@ def main():
     png_src = "COALESCE(tf.has_png, 0)" if has_file_cols else "0"
     png_path_src = "tf.png_path" if has_file_cols else "NULL"
     join_tf = "LEFT JOIN _temp_target_files tf ON t.catId = tf.catId AND t.objId = tf.objId AND t.combination = tf.combination" if has_file_cols else ""
+    meta_insert_cols = ", ".join(FITS_SUMMARY_COL_NAMES)
+    meta_select_exprs = ", ".join(
+        f"tf.{c}" if (has_file_cols and c in preserved_meta_cols) else "NULL"
+        for c in FITS_SUMMARY_COL_NAMES
+    )
 
     insert_sql = f"""
     INSERT INTO target_summary (
@@ -150,7 +161,8 @@ def main():
         bestRedshift, bestRedshiftError, bestVelocity, bestVelocityError,
         bestSubClass, hasSolution,
         nvisit, exptime,
-        has_fits, fits_path, has_png, png_path
+        has_fits, fits_path, has_png, png_path,
+        {meta_insert_cols}
     )
     SELECT 
         t.catId,
@@ -177,7 +189,8 @@ def main():
         {fits_src},
         {fits_path_src},
         {png_src},
-        {png_path_src}
+        {png_path_src},
+        {meta_select_exprs}
     FROM targets t
     LEFT JOIN (
         SELECT catId, objId, obCode, targetTypeName, fiberStatusName, ra, dec,
@@ -238,12 +251,15 @@ def main():
         ("idx_ts_exptime", "exptime"),
         ("idx_ts_has_fits", "has_fits"),
         ("idx_ts_has_png", "has_png"),
+        ("idx_ts_mjd_mean", "mjd_mean"),
+        ("idx_ts_snr_r", "snr_r"),
     ]
     for idx_name, cols in indexes:
         t_idx_start = time.time()
         cur.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON target_summary ({cols});")
         conn.commit()
         print(f"    ✅ Index {idx_name} ({cols}) built in {time.time() - t_idx_start:.2f}s", flush=True)
+    ensure_fits_metadata_schema(conn)
 
     # 4. Update view v_target_summary for 100% backward compatibility
     print("\n4️⃣  Updating view 'v_target_summary' to reference 'target_summary'...", flush=True)
